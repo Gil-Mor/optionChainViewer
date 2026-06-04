@@ -1,6 +1,8 @@
 import streamlit as st
 import optionchain
 import yfinance as yf
+from datetime import datetime
+import zoneinfo
 
 st.set_page_config(layout="wide")
 st.title("Option Chain")
@@ -11,6 +13,21 @@ popular_tickers = set([
         'SQ', 'ROKU', 'TWLO', 'ZM', 'PELOTON', 'SNOW', 'PLTR', 'GME', 'GOOG',
         'AMC', 'BB', 'NOK', 'SPCE', 'NIO', 'XPEV', 'AMAT', 'BBAI', 'WDAY', 'WMT', 'TGT', 'NVO'
     ])
+
+def is_market_open():
+    """Checks if US Markets (NYSE/NASDAQ) are open (9:30 AM - 4:00 PM ET)."""
+    tz = zoneinfo.ZoneInfo("America/New_York")
+    now = datetime.now(tz)
+
+    # Weekends
+    if now.weekday() >= 5:
+        return False
+
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return market_open <= now <= market_close
+
 
 # Input
 st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
@@ -33,11 +50,18 @@ exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, hel
 flip_strikes = st.checkbox("Flip Put Strikes to see prices with same distance from strike on the same row.")
 trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
 
+if not is_market_open():
+    st.info("🌙 US Markets are currently closed. Open Interest are not available.")
+
 # main
 res = optionchain.main(ticker,
     expiration_date=exp_date,
     flip_strikes=flip_strikes,
     trim_around_strike=trim_around_strike)
+
+if res is None:
+    st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")
+    st.stop()
 
 # Results
 st.write("---")

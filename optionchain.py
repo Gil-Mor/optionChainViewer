@@ -332,6 +332,9 @@ def main(
     else:
         df, expiration_date, available_expiration_dates = yfi.get_options_chain_table(ticker, expiration_date)
 
+    if df is None or df.empty:
+        return None
+
     if not current_price:
         current_price = yfinance.Ticker(ticker).info['regularMarketPrice']
         current_price = float(current_price)

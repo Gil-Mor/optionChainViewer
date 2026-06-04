@@ -25,14 +25,14 @@ def get_options_chain_table(symbol: str,
         exp_dates = ticker.options
         if not exp_dates:
             print(f"No options data available for {symbol}")
-            return pd.DataFrame()
+            return pd.DataFrame(), "", []
 
         # Use specified date or nearest expiration
         if expiration_date:
             if expiration_date not in exp_dates:
                 print(f"Expiration date {expiration_date} not available.")
                 print(f"Available dates: {list(exp_dates)}")
-                return pd.DataFrame()
+                return pd.DataFrame(), "", []
             target_exp = expiration_date
         else:
             target_exp = exp_dates[0]  # Nearest expiration
@@ -96,7 +96,7 @@ def get_options_chain_table(symbol: str,
 
     except Exception as e:
         print(f"Error getting options data: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), "", []
 
 if __name__ == "__main__":
     symbol = "AAPL"

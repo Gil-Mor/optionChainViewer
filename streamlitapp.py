@@ -5,13 +5,11 @@ from datetime import datetime
 import zoneinfo
 
 st.set_page_config(layout="wide")
-st.title("Option Chain")
+st.title("Option Chain Viewer")
+st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
 
 popular_tickers = set([
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX',
-        'AMD', 'INTC', 'CRM', 'PYPL', 'ADBE', 'UBER', 'ZOOM', 'SHOP',
-        'SQ', 'ROKU', 'TWLO', 'ZM', 'PELOTON', 'SNOW', 'PLTR', 'GME', 'GOOG',
-        'AMC', 'BB', 'NOK', 'SPCE', 'NIO', 'XPEV', 'AMAT', 'BBAI', 'WDAY', 'WMT', 'TGT', 'NVO'
+        'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA'
     ])
 
 def is_market_open():
@@ -88,7 +86,7 @@ if res is None:
 
 # Results
 st.write("---")
-st.write(f"Current Price: {res['current_price']}")
+st.markdown(f"<span style='color: #4798a5; font-weight: bold;'>Current Price: {res['current_price']}</span>", unsafe_allow_html=True)
 st.write(f"Expiration Date: {res['expiration_date']}")
 df = res['styled_dataframe']
 st.table(df)

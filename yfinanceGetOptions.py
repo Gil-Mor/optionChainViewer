@@ -44,11 +44,6 @@ def get_options_chain_table(symbol: str,
         calls = options_chain.calls
         puts = options_chain.puts
 
-        # yfinance already provides change and percentChange columns
-        # Just clean up any NaN values
-        calls = calls.fillna(0)
-        puts = puts.fillna(0)
-
         # Prepare calls data - use the actual change and percentChange columns
         calls_formatted = calls[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].copy()
         calls_formatted.columns = ['Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest', 'Strike']
@@ -89,8 +84,16 @@ def get_options_chain_table(symbol: str,
             'Last Price.1', 'Change.1', '% Change.1', 'Volume.1', 'Open Interest.1'   # Puts
         ]
 
-        # Fill NaN values with 0 and format numbers
-        result = result.fillna(0)
+        # Apply fillna selectively
+        # For Volume, Change, % Change, fill NaN with 0.
+        # For Last Price and Open Interest, leave NaN as is.
+        result['Volume'] = result['Volume'].fillna(0)
+        result['Volume.1'] = result['Volume.1'].fillna(0)
+        result['Change'] = result['Change'].fillna(0)
+        result['Change.1'] = result['Change.1'].fillna(0)
+        result['% Change'] = result['% Change'].fillna(0)
+        result['% Change.1'] = result['% Change.1'].fillna(0)
+        # Last Price and Open Interest columns will remain NaN if they were NaN from yfinance.
 
         return result, target_exp, exp_dates
 

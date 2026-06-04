@@ -31,32 +31,90 @@ def is_market_open():
 st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
 ticker = st.text_input(label="Ticker", value="NVDA", placeholder="NVDA")
 
-@st.cache_data
-def get_available_dates(ticker_symbol):
-    try:
-        return yf.Ticker(ticker_symbol).options
-    except Exception:
-        return []
+# Initial state for the button click
+if "get_chain_clicked" not in st.session_state:
+    st.session_state.get_chain_clicked = False
+if "prev_ticker" not in st.session_state:
+    st.session_state.prev_ticker = ""
 
-available_dates = get_available_dates(ticker)
-if not available_dates:
-    st.error(f"No options data found for ticker: {ticker}")
-    st.stop()
+# Reset the "clicked" state if the ticker changes
+if st.session_state.prev_ticker != ticker:
+    st.session_state.get_chain_clicked = False
+    st.session_state.prev_ticker = ticker
 
-exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, help="Select an expiration date to view its option chain.")
+# Add the "Get Chain" button
+if st.button("Get Chain", type="primary"):
+    st.session_state.get_chain_clicked = True
 
-display_mode = st.radio(
-    "Strike Alignment",
-    ["Normal View", "Flip Put Strikes (OTM Puts aligned with OTM Calls)"],
-    help="Choose how strike prices are aligned. 'Flip Put Strikes' aligns puts by their distance from the ATM strike, mirroring calls."
-)
-flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
-trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
-
+# Display market open status regardless of button click
 if not is_market_open():
-    st.info("🌙 US Markets are currently closed. Open Interest are not available.")
+    st.info("🌙 US Markets are currently closed. Open Interest reflects the previous session close.")
 
-@st.cache_data(show_spinner=False)
+# Only proceed if the button has been clicked
+if not st.session_state.get_chain_clicked:
+    st.info("Enter a ticker symbol and click 'Get Chain' to load data.")
+else:
+    @st.cache_data(show_spinner="Fetching available expiration dates...")
+    def get_available_dates_cached(ticker_symbol):
+        if not ticker_symbol:
+            return []
+        try:
+            return yf.Ticker(ticker_symbol).options
+        except Exception:
+            return []
+
+    available_dates = get_available_dates_cached(ticker)
+
+    if not available_dates:
+        st.error(f"No options data found for ticker: {ticker}. Please check the ticker symbol.")
+    else:
+        exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, help="Select an expiration date.")
+
+        display_mode = st.radio(
+            "Strike Alignment",
+            ["Normal View", "Flip Put Strikes (OTM Puts aligned with OTM Calls)"],
+            help="Choose how strike prices are aligned. 'Flip Put Strikes' aligns puts by their distance from the ATM strike, mirroring calls."
+        )
+        flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
+        trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
+
+        @st.cache_data(show_spinner="Downloading option chain from Yahoo Finance...")
+        def get_cached_options_data(ticker_symbol, selected_exp):
+            """Fetches raw data and price, cached by ticker and expiration."""
+            import yfinanceGetOptions as yfi_module
+            raw_df, target_exp, all_exps = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
+
+            ticker_obj = yf.Ticker(ticker_symbol)
+            price = ticker_obj.fast_info.get('last_price') or ticker_obj.info.get('regularMarketPrice') or ticker_obj.info.get('currentPrice')
+
+            return raw_df, target_exp, all_exps, price
+
+        # Only call get_cached_options_data if exp_date is available
+        if exp_date:
+            raw_df, target_exp, all_exps, current_price = get_cached_options_data(ticker, exp_date)
+
+            res = optionchain.main(ticker,
+                df=raw_df,
+                expiration_date=target_exp,
+                available_expiration_dates=all_exps,
+                current_price=current_price,
+                flip_strikes=flip_strikes,
+                trim_around_strike=trim_around_strike)
+
+            if res is None:
+                st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")
+            else:
+                # Results
+                st.write("---")
+                st.markdown(f"<span style='color: #4798a5; font-weight: bold;'>Current Price: {res['current_price']}</span>", unsafe_allow_html=True)
+                st.write(f"Expiration Date: {res['expiration_date']}")
+                df = res['styled_dataframe']
+                st.table(df)
+                context: optionchain.OptionContext = res['context']
+                st.write(f"Calls Total OTM Open Interest: {context.otm_calls_open_interest_sum}")
+                st.write(f"Puts Total OTM Open Interest: {context.otm_puts_open_interest_sum}")
+                st.write(f"Calls Total OTM Volume: {context.otm_calls_volume_sum}")
+                st.write(f"Puts Total OTM Volume: {context.otm_puts_volume_sum}")
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
     df, target_exp, all_exps = yf.Ticker(ticker_symbol).options, "", [] # Placeholder logic to match yfi signature

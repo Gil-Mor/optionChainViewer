@@ -321,13 +321,17 @@ def calls_puts_side_by_side_distance_from_strike(
 
 def main(
     ticker: str,
+    df: pd.DataFrame = None,
     filepath: str = None,
     expiration_date: str = None,
+    available_expiration_dates: list = None,
     current_price: float = None,
     flip_strikes: bool = False,
     trim_around_strike: int = 0
 ):
-    if filepath:
+    if df is not None:
+        pass
+    elif filepath:
         df = readcsv(filepath)
     else:
         df, expiration_date, available_expiration_dates = yfi.get_options_chain_table(ticker, expiration_date)

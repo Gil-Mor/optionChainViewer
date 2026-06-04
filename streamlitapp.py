@@ -58,12 +58,29 @@ trim_around_strike = st.number_input(label="Trim table around strike. 0 to not t
 if not is_market_open():
     st.info("🌙 US Markets are currently closed. Open Interest are not available.")
 
-with st.spinner("Fetching option chain data..."):
-    # main
-    res = optionchain.main(ticker,
-        expiration_date=exp_date,
-        flip_strikes=flip_strikes,
-        trim_around_strike=trim_around_strike)
+@st.cache_data(show_spinner=False)
+def get_cached_options_data(ticker_symbol, selected_exp):
+    """Fetches raw data and price, cached by ticker and expiration."""
+    df, target_exp, all_exps = yf.Ticker(ticker_symbol).options, "", [] # Placeholder logic to match yfi signature
+    # Actually use your yfi module
+    import yfinanceGetOptions as yfi_module
+    df, target_exp, all_exps = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
+
+    ticker_obj = yf.Ticker(ticker_symbol)
+    price = ticker_obj.fast_info.get('last_price') or ticker_obj.info.get('regularMarketPrice')
+
+    return df, target_exp, all_exps, price
+
+with st.spinner(f"Loading {ticker} data..."):
+    raw_df, target_exp, all_exps, current_price = get_cached_options_data(ticker, exp_date)
+
+res = optionchain.main(ticker,
+    df=raw_df,
+    expiration_date=target_exp,
+    available_expiration_dates=all_exps,
+    current_price=current_price,
+    flip_strikes=flip_strikes,
+    trim_around_strike=trim_around_strike)
 
 if res is None:
     st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")

@@ -47,7 +47,12 @@ if not available_dates:
 
 exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, help="Select an expiration date to view its option chain.")
 
-flip_strikes = st.checkbox("Flip Put Strikes to see prices with same distance from strike on the same row.")
+display_mode = st.radio(
+    "Strike Alignment",
+    ["Normal View", "Flip Put Strikes (OTM Puts aligned with OTM Calls)"],
+    help="Choose how strike prices are aligned. 'Flip Put Strikes' aligns puts by their distance from the ATM strike, mirroring calls."
+)
+flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
 trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
 
 if not is_market_open():

@@ -4,7 +4,11 @@ import yfinance as yf
 from datetime import datetime
 import zoneinfo
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="Option Chain Viewer",
+    page_icon="📈",
+    layout="wide",
+)
 st.title("Option Chain Viewer")
 st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
 

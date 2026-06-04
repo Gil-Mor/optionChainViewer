@@ -7,6 +7,8 @@ Option chains are a window into market sentiment. They allow traders to see how 
 
 Standard option chain viewers can often be cluttered or difficult to read across the "Strike" divide. This viewer is designed to solve that by offering alignment options and visualization tools that highlight the relationship between Calls and Puts.
 
+[Example Yahoo Finance NVidia Option Chain](https://finance.yahoo.com/quote/NVDA/options)
+
 ## Key Features
 
 - **Alignment:** This app allows you to align columns and strike prices symmetrically.

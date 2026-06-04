@@ -1,0 +1,357 @@
+import pandas as pd
+from pandas.io.formats.style import Styler
+import yfinanceGetOptions as yfi
+import yfinance
+
+def readcsv(file_path: str) -> pd.DataFrame:
+    df = pd.read_csv(file_path, delimiter="\t")
+    return df
+
+
+class OptionContext:
+    def __init__(self,
+        df: pd.DataFrame,
+        ticker: str,
+        current_price: float,
+    ):
+        self.df: pd.DataFrame = df
+        self.styled_df: Styler = df.style
+        self.current_price = current_price
+        self.ticker = ticker
+        self.calls_strike_col_name = "Strike"
+        self.puts_strike_col_name = "Strike"
+        self.atm_strike = get_atm_strike_from_current_price(df, current_price)
+        self.atm_strike_row = df[df['Strike'] == self.atm_strike].index[0]
+
+    def update_strike_row(self) -> None:
+        self.atm_strike_row = self.df[self.df[self.calls_strike_col_name] == self.atm_strike].index[0]
+        if self.calls_strike_col_name != self.puts_strike_col_name:
+            puts_atm_strike_row = self.df[self.df[self.puts_strike_col_name] == self.atm_strike].index[0]
+            assert self.atm_strike_row == puts_atm_strike_row, f"{self.atm_strike_row} != {puts_atm_strike_row}"
+
+    def get_calls_strike_col_index(self) -> int:
+        return self.df.columns.get_loc(self.calls_strike_col_name)
+
+    def get_puts_strike_col_index(self) -> int:
+        return self.df.columns.get_loc(self.puts_strike_col_name)
+
+    def get_otm_stats(self) -> None:
+        self.otm_calls = self.df[self.df[self.calls_strike_col_name] > self.atm_strike]
+        self.otm_calls_open_interest_sum = self.otm_calls["Open Interest"].sum()
+        self.otm_calls_volume_sum = self.otm_calls["Volume"].sum()
+        self.otm_puts = self.df[self.df[self.puts_strike_col_name] < self.atm_strike]
+        self.otm_puts_open_interest_sum = self.otm_puts["Open Interest.1"].sum()
+        self.otm_puts_volume_sum = self.otm_puts["Volume.1"].sum()
+
+    def color_change_values(self) -> None:
+        def color_gradient(val):
+            """
+            Apply green background color based on value (0-100)
+            """
+            if val > 0:
+                alpha = val / 100
+                # Light green (rgba) to dark green
+                return f'background-color: rgba(0, 255, 0, {alpha * 0.8 + 0.1})'
+            elif val < 0:
+                alpha = val / -100
+                return f'background-color: rgba(255, 0, 0, {alpha * 0.8 + 0.1})'
+        self.styled_df = self.styled_df.map(color_gradient, subset=['% Change', '% Change.1'])
+
+
+def flip_rows_around_strike(df, split_point=None):
+    """
+    Split a DataFrame and flip the right portion rows vertically, optionally around a pivot.
+
+    Parameters:
+    df: pandas DataFrame
+    split_point: int, column index where to split (if None, splits in middle)
+    pivot_row: int, row index to use as pivot (if None, flips all rows)
+
+    Returns:
+    pandas DataFrame with left portion + right portion with flipped rows
+    """
+
+    # Determine split point (middle of columns if not specified)
+    if split_point is None:
+        split_point = len(df.columns) // 2
+
+    # Split the DataFrame
+    left_portion = df.iloc[:, :split_point]
+    right_portion = df.iloc[:, split_point:]
+
+    # Flip right portion:
+    # Only flip rows vertically (reverse row order)
+    # Keep columns in original order
+
+    # Original behavior - flip all rows
+    right_flipped = right_portion.iloc[::-1, :]
+
+    left_to_use = left_portion
+    right_to_use = right_flipped
+
+    # Combine left portion with flipped right portion
+    # Reset index to ensure proper concatenation
+    left_portion_reset = left_to_use.reset_index(drop=True)
+    right_flipped_reset = right_to_use.reset_index(drop=True)
+
+    # Concatenate horizontally
+    result_df = pd.concat([left_portion_reset, right_flipped_reset], axis=1)
+
+    return result_df
+
+
+def flip_right_half_columns(df: pd.DataFrame, start: int = None) -> pd.DataFrame:
+    if start is None:
+        start = len(df.columns) // 2
+    left = list(df.columns[:start])
+
+    # Reverse columns to the right.
+    right = list(df.columns[start:])[::-1]
+
+    return df[left + right]
+
+
+def duplicate_and_rename_strike(df: pd.DataFrame) -> pd.DataFrame:
+    strike_idx = df.columns.get_loc("Strike")
+
+    left = list(df.columns[:strike_idx])
+    middle = ['Calls Strike', 'Puts Strike']  # Renamed columns
+    right = list(df.columns[strike_idx+1:])
+
+    new_columns = left + middle + right
+    df_result = df[left + [df.columns[strike_idx], df.columns[strike_idx]] + right].copy()
+    df_result.columns = new_columns
+
+    return df_result
+
+def highlight_cell(styler: Styler, col_name: str, val: float, color: str = "#4798a5") -> Styler:
+    def style_atm_strike(s, target_val):
+        return [f'background-color: {color}; font-weight: bold' if val == target_val else None for val in s]
+
+    styler = styler.apply(style_atm_strike, subset=[col_name], target_val=val)
+
+    return styler
+
+
+def format_style(styler: Styler):
+    styler = styler.format(precision=2)
+    styler = styler.set_properties(**{'text-align': 'center !important'})
+    styler = styler.set_table_styles([
+        {'selector': 'td', 'props': [('text-align', 'center !important')]},
+        {'selector': 'th', 'props': [('text-align', 'center !important')]}
+    ])
+    return styler
+
+
+def convert_comma_number(value) -> float:
+    """Convert comma-separated numbers to float."""
+    try:
+        if pd.isna(value):
+            return float('nan')
+        # Convert to string and remove commas
+        str_val = str(value).replace(',', '')
+        return float(str_val)
+    except (ValueError, TypeError):
+        return float('nan')
+
+
+def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, left_color='green', right_color='red'):
+    """
+    Style two columns with proportional horizontal bars.
+    Handles numbers with comma separators (e.g., "1,234", "35,000").
+
+    Parameters:
+    df: DataFrame
+    left_col: column name for left bars (fills from left to right)
+    right_col: column name for right bars (fills from right to left)
+    left_color: color for left column bars
+    right_color: color for right column bars
+    """
+
+    def apply_bar_styling(s):
+        styles = [None] * len(s)
+
+        # Only apply styling to the specified columns
+        if s.name == left_col:
+            # Left column: bars from left to right
+            for idx in s.index:
+                try:
+                    left_val = convert_comma_number(df.loc[idx, left_col])
+                    right_val = convert_comma_number(df.loc[idx, right_col])
+
+                    # Skip if values are NaN or invalid
+                    if pd.isna(left_val) or pd.isna(right_val):
+                        continue
+
+                    total = left_val + right_val
+
+                    if total > 0:
+                        percentage = (left_val / total) * 100
+                        styles[idx] = f'''
+                            background: linear-gradient(
+                                to right,
+                                {left_color} 0%,
+                                {left_color} {percentage:.1f}%,
+                                transparent {percentage:.1f}%,
+                                transparent 100%
+                            );
+                            color: white;
+                            font-weight: bold;
+                            text-align: center;
+                        '''
+                except (ValueError, TypeError, KeyError):
+                    # Skip styling if there's any error
+                    continue
+
+        elif s.name == right_col:
+            # Right column: bars from right to left
+            for idx in s.index:
+                try:
+                    left_val = convert_comma_number(df.loc[idx, left_col])
+                    right_val = convert_comma_number(df.loc[idx, right_col])
+
+                    # Skip if values are NaN or invalid
+                    if pd.isna(left_val) or pd.isna(right_val):
+                        continue
+
+                    total = left_val + right_val
+
+                    if total > 0:
+                        percentage = (right_val / total) * 100
+                        styles[idx] = f'''
+                            background: linear-gradient(
+                                to left,
+                                {right_color} 0%,
+                                {right_color} {percentage:.1f}%,
+                                transparent {percentage:.1f}%,
+                                transparent 100%
+                            );
+                            color: white;
+                            font-weight: bold;
+                            text-align: center;
+                        '''
+                except (ValueError, TypeError, KeyError):
+                    # Skip styling if there's any error
+                    continue
+
+        return styles
+
+    return styler.apply(apply_bar_styling, axis=0)
+
+def get_atm_strike_from_current_price(
+    df: pd.DataFrame,
+    current_price: float
+) -> float:
+    for gap in [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 10, 15, 20, 25, 30, 40, 50]:
+        for strike in df["Strike"]:
+            if strike - gap < current_price and current_price < strike + gap:
+                return strike
+
+
+def trim_rows_symmetric_radius(
+    df: pd.DataFrame,
+    pivot_row: int,
+    rows_to_trim: int
+) -> pd.DataFrame:
+    """
+    Trim a DataFrame symmetrically around a given pivot row.
+
+    Parameters:
+    df: pandas DataFrame to trim
+    pivot_row: int, row index to use as pivot center
+    rows_to_trim: Optional fixed number of rows to trim around ATM strike.
+    if 0 - do the normal symmetric trim around the ATM (ATM in the middle of table)
+
+    Returns:
+    pandas DataFrame trimmed symmetrically around pivot_row
+    """
+
+    if pivot_row < 0 or pivot_row >= len(df):
+        raise ValueError(f"Pivot row {pivot_row} is out of bounds for DataFrame with {len(df)} rows")
+
+    # Calculate how many rows we can include symmetrically around pivot
+    rows_before_pivot = pivot_row
+    rows_after_pivot = len(df) - pivot_row - 1
+    symmetric_radius = min(rows_before_pivot, rows_after_pivot)
+    if rows_to_trim:
+        symmetric_radius = min(rows_before_pivot, rows_after_pivot, rows_to_trim)
+
+
+    # Define the symmetric range around pivot
+    start_row = pivot_row - symmetric_radius
+    end_row = pivot_row + symmetric_radius + 1  # +1 because end is exclusive
+
+    # Return the symmetrically trimmed DataFrame
+    trimmed_df = df.iloc[start_row:end_row].reset_index(drop=True)
+
+    return trimmed_df
+
+
+def calls_puts_side_by_side_distance_from_strike(
+    df_context: OptionContext,
+    flip_strikes: bool = False,
+    trim_around_strike: int = 0
+) -> OptionContext:
+
+    if trim_around_strike:
+        df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
+        # Rows indexes changed. Get ATM strike row again
+        df_context.update_strike_row()
+
+    if flip_strikes:
+        df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
+        df_context.df = duplicate_and_rename_strike(df_context.df)
+        df_context.calls_strike_col_name = "Calls Strike"
+        df_context.puts_strike_col_name = "Puts Strike"
+        df_context.df = flip_rows_around_strike(df_context.df)
+        # Rows indexes changed. Get ATM strike row again
+        df_context.update_strike_row()
+
+    df_context.df = flip_right_half_columns(df_context.df, start=df_context.get_puts_strike_col_index() + 1)
+
+
+    df_context.styled_df = df_context.df.style
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', "#64a375c6", "#ad6368c7")
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', "#8dc170b4", "#e6957ea6")
+    df_context.styled_df = format_style(df_context.styled_df)
+    df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
+    df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
+    return df_context
+
+
+def main(
+    ticker: str,
+    filepath: str = None,
+    expiration_date: str = None,
+    current_price: float = None,
+    flip_strikes: bool = False,
+    trim_around_strike: int = 0
+):
+    if filepath:
+        df = readcsv(filepath)
+    else:
+        df, expiration_date, available_expiration_dates = yfi.get_options_chain_table(ticker, expiration_date)
+
+    if not current_price:
+        current_price = yfinance.Ticker(ticker).info['regularMarketPrice']
+        current_price = float(current_price)
+        print(f"Current price is: {current_price}")
+
+    df_context = OptionContext(df, ticker, current_price)
+
+    df_context = calls_puts_side_by_side_distance_from_strike(
+        df_context,
+        flip_strikes,
+        trim_around_strike
+    )
+
+    df_context.color_change_values()
+    df_context.get_otm_stats()
+
+    return {
+        "styled_dataframe": df_context.styled_df,
+        "current_price": current_price,
+        "expiration_date": expiration_date,
+        "available_expiration_dates": available_expiration_dates,
+        "context": df_context
+    }

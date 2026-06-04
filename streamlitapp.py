@@ -58,11 +58,12 @@ trim_around_strike = st.number_input(label="Trim table around strike. 0 to not t
 if not is_market_open():
     st.info("🌙 US Markets are currently closed. Open Interest are not available.")
 
-# main
-res = optionchain.main(ticker,
-    expiration_date=exp_date,
-    flip_strikes=flip_strikes,
-    trim_around_strike=trim_around_strike)
+with st.spinner("Fetching option chain data..."):
+    # main
+    res = optionchain.main(ticker,
+        expiration_date=exp_date,
+        flip_strikes=flip_strikes,
+        trim_around_strike=trim_around_strike)
 
 if res is None:
     st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")

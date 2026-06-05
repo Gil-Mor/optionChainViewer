@@ -61,18 +61,24 @@ with st.sidebar:
 @st.cache_data(show_spinner=False)
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
-    df, target_exp, all_exps = yf.Ticker(ticker_symbol).options, "", [] # Placeholder logic to match yfi signature
-    # Actually use your yfi module
     import yfinanceGetOptions as yfi_module
     df, target_exp, all_exps = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
 
     ticker_obj = yf.Ticker(ticker_symbol)
-    price = ticker_obj.fast_info.get('last_price') or ticker_obj.info.get('regularMarketPrice')
+    fast = ticker_obj.fast_info
+    price = fast.get('last_price') or ticker_obj.info.get('regularMarketPrice')
+    prev_close = fast.get('previous_close') or ticker_obj.info.get('regularMarketPreviousClose')
 
-    return df, target_exp, all_exps, price
+    change = None
+    percent_change = None
+    if price and prev_close:
+        change = price - prev_close
+        percent_change = (change / prev_close) * 100
+
+    return df, target_exp, all_exps, price, change, percent_change
 
 with st.spinner(f"Loading {ticker} data..."):
-    raw_df, target_exp, all_exps, current_price = get_cached_options_data(ticker, exp_date)
+    raw_df, target_exp, all_exps, current_price, price_change, price_pct_change = get_cached_options_data(ticker, exp_date)
 
 res = optionchain.main(ticker,
     df=raw_df,
@@ -89,7 +95,20 @@ if res is None:
 # Results
 st.write("---")
 st.subheader(f"Ticker: {ticker}")
-st.markdown(f"<span style='color: #4798a5; font-weight: bold;'>Current Price: {res['current_price']}</span>", unsafe_allow_html=True)
+
+price_color = "#4798a5"
+price_display = f"Current Price: {current_price:.2f}"
+price_change_display = "unch"
+price_change_color = "grey"
+if price_change is not None and price_pct_change is not None:
+    price_change_color = "green" if price_change >= 0 else "red"
+    sign = "+" if price_change > 0 else ""
+    price_change_display = f" {sign}{price_change:.2f} ({sign}{price_pct_change:.2f}%)"
+
+st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1.2em;'>{price_display}</span><span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'> | daily change: {price_change_display}</span>", unsafe_allow_html=True)
+
+# st.markdown(f"<span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'>{price_change_display}</span>", unsafe_allow_html=True)
+
 st.write(f"Expiration Date: {res['expiration_date']}")
 if not is_market_open():
     st.info("🌙 US Markets are currently closed. Open Interest are not available.")

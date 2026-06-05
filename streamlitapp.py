@@ -8,13 +8,10 @@ st.set_page_config(
     page_title="Option Chain Viewer",
     page_icon="📈",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 st.title("Option Chain Viewer")
 st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
-
-popular_tickers = set([
-        'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA'
-    ])
 
 def is_market_open():
     """Checks if US Markets (NYSE/NASDAQ) are open (9:30 AM - 4:00 PM ET)."""
@@ -29,6 +26,10 @@ def is_market_open():
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
 
     return market_open <= now <= market_close
+
+popular_tickers = set([
+        'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA'
+    ])
 
 @st.cache_data
 def get_available_dates(ticker_symbol):
@@ -56,9 +57,6 @@ with st.sidebar:
     )
     flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
     trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
-
-    if not is_market_open():
-        st.info("🌙 US Markets are currently closed. Open Interest are not available.")
 
 @st.cache_data(show_spinner=False)
 def get_cached_options_data(ticker_symbol, selected_exp):
@@ -90,8 +88,12 @@ if res is None:
 
 # Results
 st.write("---")
+st.subheader(f"Ticker: {ticker}")
 st.markdown(f"<span style='color: #4798a5; font-weight: bold;'>Current Price: {res['current_price']}</span>", unsafe_allow_html=True)
 st.write(f"Expiration Date: {res['expiration_date']}")
+if not is_market_open():
+    st.info("🌙 US Markets are currently closed. Open Interest are not available.")
+
 df = res['styled_dataframe']
 st.table(df)
 context: optionchain.OptionContext = res['context']

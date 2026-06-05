@@ -43,6 +43,32 @@ class OptionContext:
         self.otm_puts_open_interest_sum = self.otm_puts["Open Interest.1"].sum()
         self.otm_puts_volume_sum = self.otm_puts["Volume.1"].sum()
 
+    def get_otm_sentiment_styler(self) -> Styler:
+        """Creates a styled summary table for OTM sentiment using proportional bars."""
+        data = {
+            'Metric': ['OTM Open Interest', 'OTM Volume'],
+            'Calls': [self.otm_calls_open_interest_sum, self.otm_calls_volume_sum],
+            'Puts': [self.otm_puts_open_interest_sum, self.otm_puts_volume_sum],
+        }
+        sentiment_df = pd.DataFrame(data)
+        sentiment_df['P/C Ratio'] = sentiment_df.apply(
+            lambda x: x['Puts'] / x['Calls'] if x['Calls'] > 0 else 0, axis=1
+        )
+
+        styler = sentiment_df.style.hide(axis='index')
+        styler = style_proportional_bars(
+            sentiment_df,
+            styler,
+            'Calls',
+            'Puts',
+            left_color="#66C76673",
+            right_color="#B9696384",
+            text_color="white"
+        )
+        styler = styler.format({'Calls': '{:,.0f}', 'Puts': '{:,.0f}', 'P/C Ratio': '{:.2f}'})
+        styler = styler.set_properties(**{'text-align': 'center'})
+        return styler
+
     def color_change_values(self) -> None:
         def color_gradient(val):
             if pd.isna(val) or val == 0:
@@ -160,7 +186,7 @@ def convert_comma_number(value) -> float:
         return float('nan')
 
 
-def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, left_color='green', right_color='red'):
+def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, left_color='green', right_color='red', text_color='white'):
     """
     Style two columns with proportional horizontal bars.
     Handles numbers with comma separators (e.g., "1,234", "35,000").
@@ -200,7 +226,7 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                                 transparent {percentage:.1f}%,
                                 transparent 100%
                             );
-                            color: white;
+                            color: {text_color};
                             font-weight: bold;
                             text-align: center;
                         '''
@@ -231,7 +257,7 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                                 transparent {percentage:.1f}%,
                                 transparent 100%
                             );
-                            color: white;
+                            color: {text_color};
                             font-weight: bold;
                             text-align: center;
                         '''
@@ -365,5 +391,6 @@ def main(
         "current_price": current_price,
         "expiration_date": expiration_date,
         "available_expiration_dates": available_expiration_dates,
-        "context": df_context
+        "context": df_context,
+        "sentiment_styler": df_context.get_otm_sentiment_styler()
     }

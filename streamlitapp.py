@@ -116,7 +116,10 @@ if not is_market_open():
 df = res['styled_dataframe']
 st.table(df)
 context: optionchain.OptionContext = res['context']
-st.write(f"Calls Total OTM Open Interest: {context.otm_calls_open_interest_sum}")
-st.write(f"Puts Total OTM Open Interest: {context.otm_puts_open_interest_sum}")
-st.write(f"Calls Total OTM Volume: {context.otm_calls_volume_sum}")
-st.write(f"Puts Total OTM Volume: {context.otm_puts_volume_sum}")
+
+st.write("---")
+if 'sentiment_styler' in res:
+    st.subheader("OTM Market Sentiment")
+    st.table(res['sentiment_styler'])
+else:
+    st.warning("Sentiment summary data is missing from the results.")

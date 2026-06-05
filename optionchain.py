@@ -36,10 +36,10 @@ class OptionContext:
         return self.df.columns.get_loc(self.puts_strike_col_name)
 
     def get_otm_stats(self) -> None:
-        self.otm_calls = self.df[self.df[self.calls_strike_col_name] > self.atm_strike]
+        self.otm_calls = self.df[self.df[self.calls_strike_col_name] > self.current_price]
         self.otm_calls_open_interest_sum = self.otm_calls["Open Interest"].sum()
         self.otm_calls_volume_sum = self.otm_calls["Volume"].sum()
-        self.otm_puts = self.df[self.df[self.puts_strike_col_name] < self.atm_strike]
+        self.otm_puts = self.df[self.df[self.puts_strike_col_name] < self.current_price]
         self.otm_puts_open_interest_sum = self.otm_puts["Open Interest.1"].sum()
         self.otm_puts_volume_sum = self.otm_puts["Volume.1"].sum()
 
@@ -273,10 +273,11 @@ def get_atm_strike_from_current_price(
     df: pd.DataFrame,
     current_price: float
 ) -> float:
-    for gap in [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 10, 15, 20, 25, 30, 40, 50]:
-        for strike in df["Strike"]:
-            if strike - gap < current_price and current_price < strike + gap:
-                return strike
+    if df.empty or current_price is None:
+        return 0.0
+    # Efficiently find the strike price closest to the current price
+    closest_strike = df["Strike"].iloc[(df["Strike"] - current_price).abs().idxmin()]
+    return float(closest_strike)
 
 
 def trim_rows_symmetric_radius(

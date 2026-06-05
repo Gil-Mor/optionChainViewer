@@ -59,6 +59,22 @@ class OptionContext:
         self.total_puts_open_interest_sum = self.df["Open Interest.1"].sum()
         self.total_puts_volume_sum = self.df["Volume.1"].sum()
 
+        # Max values for normalization in Modes 2 and 3
+        # Standard UI practice: scale relative to the Max strike in the group so bars are visible
+        self.otm_max_oi = max(self.otm_calls["Open Interest"].max() if not self.otm_calls.empty else 0,
+                              self.otm_puts["Open Interest.1"].max() if not self.otm_puts.empty else 0, 1)
+        self.otm_max_vol = max(self.otm_calls["Volume"].max() if not self.otm_calls.empty else 0,
+                               self.otm_puts["Volume.1"].max() if not self.otm_puts.empty else 0, 1)
+
+        atm_df = self.df[self.df[self.calls_strike_col_name] == self.atm_strike]
+        self.atm_max_oi = max(atm_df["Open Interest"].max() if not atm_df.empty else 0,
+                              atm_df["Open Interest.1"].max() if not atm_df.empty else 0, 1)
+        self.atm_max_vol = max(atm_df["Volume"].max() if not atm_df.empty else 0,
+                               atm_df["Volume.1"].max() if not atm_df.empty else 0, 1)
+
+        self.total_max_oi = max(self.df["Open Interest"].max(), self.df["Open Interest.1"].max(), 1)
+        self.total_max_vol = max(self.df["Volume"].max(), self.df["Volume.1"].max(), 1)
+
     def get_sentiment_summary_styler(self) -> Styler:
         """Creates a styled summary table for OTM, ATM, and Total sentiment using proportional bars."""
         data = {
@@ -211,23 +227,21 @@ def convert_comma_number(value) -> float:
     except (ValueError, TypeError):
         return float('nan')
 
-
 def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, context: OptionContext, mode='Per Strike (Row)', left_color='green', right_color='red', text_color='white'):
     """
     Style two columns with proportional horizontal bars.
-    Supports three scaling modes for the bar widths.
+    Supports three scaling modes. Modes 2 and 3 use Max-normalization for better visibility.
     """
     is_oi = "Open Interest" in left_col
 
-    # Pre-calculate totals for global/OTM scaling
-    total_all = (context.total_calls_open_interest_sum + context.total_puts_open_interest_sum) if is_oi else (context.total_calls_volume_sum + context.total_puts_volume_sum)
-    total_otm = (context.otm_calls_open_interest_sum + context.otm_puts_open_interest_sum) if is_oi else (context.otm_calls_volume_sum + context.otm_puts_volume_sum)
-    total_atm = (context.atm_calls_open_interest_sum + context.atm_puts_open_interest_sum) if is_oi else (context.atm_calls_volume_sum + context.atm_puts_volume_sum)
+    # For Modes 2 and 3, we scale relative to the Maximum value in that category
+    # rather than the Sum. This is the UI standard for in-cell data bars.
+    ref_all = context.total_max_oi if is_oi else context.total_max_vol
+    ref_otm = context.otm_max_oi if is_oi else context.otm_max_vol
+    ref_atm = context.atm_max_oi if is_oi else context.atm_max_vol
 
-    # Safety check for zeros
-    total_all = max(total_all, 1)
-    total_otm = max(total_otm, 1)
-    total_atm = max(total_atm, 1)
+    # Row-local sum (used for Mode 1)
+    # We pre-calculate sums if needed, but row-local is handled inside the loop.
 
     def apply_bar_styling(s):
         styles = [None] * len(s)
@@ -243,15 +257,15 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if pd.isna(left_val): continue
 
                     if mode == "Relative to Full Chain":
-                        denominator = total_all
+                        denominator = ref_all
                     elif mode == "Relative to OTM/ATM Total":
                         strike = df.loc[idx, context.calls_strike_col_name]
                         if strike == context.atm_strike:
-                            denominator = total_atm
+                            denominator = ref_atm
                         elif strike > context.current_price: # OTM Call
-                            denominator = total_otm
+                            denominator = ref_otm
                         else: # ITM Call - fall back to total or row-local
-                            denominator = total_all
+                            denominator = ref_all
                     else: # Default: Per Strike (Row)
                         denominator = left_val + (right_val if not pd.isna(right_val) else 0)
 
@@ -284,15 +298,15 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if pd.isna(right_val): continue
 
                     if mode == "Relative to Full Chain":
-                        denominator = total_all
+                        denominator = ref_all
                     elif mode == "Relative to OTM/ATM Total":
                         strike = df.loc[idx, context.puts_strike_col_name]
                         if strike == context.atm_strike:
-                            denominator = total_atm
+                            denominator = ref_atm
                         elif strike < context.current_price: # OTM Put
-                            denominator = total_otm
+                            denominator = ref_otm
                         else: # ITM Put
-                            denominator = total_all
+                            denominator = ref_all
                     else: # Default: Per Strike (Row)
                         denominator = (left_val if not pd.isna(left_val) else 0) + right_val
 

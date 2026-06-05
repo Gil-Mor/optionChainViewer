@@ -45,16 +45,21 @@ class OptionContext:
 
     def color_change_values(self) -> None:
         def color_gradient(val):
-            """
-            Apply green background color based on value (0-100)
-            """
+            if pd.isna(val) or val == 0:
+                return None
+
+            # Cap the scaling at 100% so that outliers (e.g., 2000%)
+            # don't result in blindingly opaque colors.
+            max_val = 80
+            capped_val = min(abs(val), max_val)
+
+            # Scale alpha between 0.1 and 0.7.
+            # 0.7 is bright enough to show significance without being blinding.
+            alpha = (capped_val / max_val) * 0.6 + 0.1
+
             if val > 0:
-                alpha = val / 100
-                # Light green (rgba) to dark green
-                return f'background-color: rgba(0, 255, 0, {alpha * 0.8 + 0.1})'
-            elif val < 0:
-                alpha = val / -100
-                return f'background-color: rgba(255, 0, 0, {alpha * 0.8 + 0.1})'
+                return f'background-color: rgba(0, 255, 0, {alpha})'
+            return f'background-color: rgba(255, 0, 0, {alpha})'
         self.styled_df = self.styled_df.map(color_gradient, subset=['% Change', '% Change.1'])
 
 

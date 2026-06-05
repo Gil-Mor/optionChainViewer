@@ -58,6 +58,13 @@ with st.sidebar:
     flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
     trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
 
+    st.subheader("Visualization")
+    bar_scaling_mode = st.radio(
+        "Proportional Bar Scaling",
+        ["Per Strike (Row)", "Relative to OTM/ATM Total", "Relative to Full Chain"],
+        help="Mode 1: Row-local. Mode 2: Relative to OTM/ATM sums. Mode 3: Relative to total chain sums."
+    )
+
 @st.cache_data(show_spinner=False)
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
@@ -86,7 +93,8 @@ res = optionchain.main(ticker,
     available_expiration_dates=all_exps,
     current_price=current_price,
     flip_strikes=flip_strikes,
-    trim_around_strike=trim_around_strike)
+    trim_around_strike=trim_around_strike,
+    bar_scaling_mode=bar_scaling_mode)
 
 if res is None:
     st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")

@@ -86,6 +86,7 @@ class OptionContext:
             styler,
             'Calls',
             'Puts',
+            self,
             left_color="#66C76673",
             right_color="#B9696384",
             text_color="white"
@@ -211,18 +212,22 @@ def convert_comma_number(value) -> float:
         return float('nan')
 
 
-def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, left_color='green', right_color='red', text_color='white'):
+def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_col, context: OptionContext, mode='Per Strike (Row)', left_color='green', right_color='red', text_color='white'):
     """
     Style two columns with proportional horizontal bars.
-    Handles numbers with comma separators (e.g., "1,234", "35,000").
-
-    Parameters:
-    df: DataFrame
-    left_col: column name for left bars (fills from left to right)
-    right_col: column name for right bars (fills from right to left)
-    left_color: color for left column bars
-    right_color: color for right column bars
+    Supports three scaling modes for the bar widths.
     """
+    is_oi = "Open Interest" in left_col
+
+    # Pre-calculate totals for global/OTM scaling
+    total_all = (context.total_calls_open_interest_sum + context.total_puts_open_interest_sum) if is_oi else (context.total_calls_volume_sum + context.total_puts_volume_sum)
+    total_otm = (context.otm_calls_open_interest_sum + context.otm_puts_open_interest_sum) if is_oi else (context.otm_calls_volume_sum + context.otm_puts_volume_sum)
+    total_atm = (context.atm_calls_open_interest_sum + context.atm_puts_open_interest_sum) if is_oi else (context.atm_calls_volume_sum + context.atm_puts_volume_sum)
+
+    # Safety check for zeros
+    total_all = max(total_all, 1)
+    total_otm = max(total_otm, 1)
+    total_atm = max(total_atm, 1)
 
     def apply_bar_styling(s):
         styles = [None] * len(s)
@@ -235,14 +240,24 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     left_val = convert_comma_number(df.loc[idx, left_col])
                     right_val = convert_comma_number(df.loc[idx, right_col])
 
-                    # Skip if values are NaN or invalid
-                    if pd.isna(left_val) or pd.isna(right_val):
-                        continue
+                    if pd.isna(left_val): continue
 
-                    total = left_val + right_val
+                    if mode == "Relative to Full Chain":
+                        denominator = total_all
+                    elif mode == "Relative to OTM/ATM Total":
+                        strike = df.loc[idx, context.calls_strike_col_name]
+                        if strike == context.atm_strike:
+                            denominator = total_atm
+                        elif strike > context.current_price: # OTM Call
+                            denominator = total_otm
+                        else: # ITM Call - fall back to total or row-local
+                            denominator = total_all
+                    else: # Default: Per Strike (Row)
+                        denominator = left_val + (right_val if not pd.isna(right_val) else 0)
 
-                    if total > 0:
-                        percentage = (left_val / total) * 100
+                    if denominator > 0:
+                        percentage = (left_val / denominator) * 100
+                        percentage = min(percentage, 100)
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to right,
@@ -266,14 +281,24 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     left_val = convert_comma_number(df.loc[idx, left_col])
                     right_val = convert_comma_number(df.loc[idx, right_col])
 
-                    # Skip if values are NaN or invalid
-                    if pd.isna(left_val) or pd.isna(right_val):
-                        continue
+                    if pd.isna(right_val): continue
 
-                    total = left_val + right_val
+                    if mode == "Relative to Full Chain":
+                        denominator = total_all
+                    elif mode == "Relative to OTM/ATM Total":
+                        strike = df.loc[idx, context.puts_strike_col_name]
+                        if strike == context.atm_strike:
+                            denominator = total_atm
+                        elif strike < context.current_price: # OTM Put
+                            denominator = total_otm
+                        else: # ITM Put
+                            denominator = total_all
+                    else: # Default: Per Strike (Row)
+                        denominator = (left_val if not pd.isna(left_val) else 0) + right_val
 
-                    if total > 0:
-                        percentage = (right_val / total) * 100
+                    if denominator > 0:
+                        percentage = (right_val / denominator) * 100
+                        percentage = min(percentage, 100)
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to left,
@@ -347,7 +372,8 @@ def trim_rows_symmetric_radius(
 def calls_puts_side_by_side_distance_from_strike(
     df_context: OptionContext,
     flip_strikes: bool = False,
-    trim_around_strike: int = 0
+    trim_around_strike: int = 0,
+    bar_scaling_mode: str = 'Per Strike (Row)'
 ) -> OptionContext:
 
     if trim_around_strike:
@@ -368,8 +394,8 @@ def calls_puts_side_by_side_distance_from_strike(
 
 
     df_context.styled_df = df_context.df.style
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', "#64a375c6", "#ad6368c7")
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', "#8dc170b4", "#e6957ea6")
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode, "#64a375c6", "#ad6368c7")
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode, "#8dc170b4", "#e6957ea6")
     df_context.styled_df = format_style(df_context.styled_df)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
@@ -384,7 +410,8 @@ def main(
     available_expiration_dates: list = None,
     current_price: float = None,
     flip_strikes: bool = False,
-    trim_around_strike: int = 0
+    trim_around_strike: int = 0,
+    bar_scaling_mode: str = 'Per Strike (Row)'
 ):
     if df is not None:
         pass
@@ -409,7 +436,8 @@ def main(
     df_context = calls_puts_side_by_side_distance_from_strike(
         df_context,
         flip_strikes,
-        trim_around_strike
+        trim_around_strike,
+        bar_scaling_mode
     )
 
     df_context.color_change_values()

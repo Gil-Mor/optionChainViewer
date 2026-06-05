@@ -56,13 +56,13 @@ with st.sidebar:
         help="Choose how strike prices are aligned. 'Flip Put Strikes' aligns puts by their distance from the ATM strike, mirroring calls."
     )
     flip_strikes = (display_mode == "Flip Put Strikes (OTM Puts aligned with OTM Calls)")
-    trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=10)
+    trim_around_strike = st.number_input(label="Trim table around strike. 0 to not trim.", min_value=0, value=7)
 
     st.subheader("Visualization")
     bar_scaling_mode = st.radio(
         "Proportional Bar Scaling",
-        ["Per Strike (Row)", "Relative to OTM/ATM Total", "Relative to Full Chain"],
-        help="Mode 1: Row-local. Mode 2: Relative to OTM/ATM sums. Mode 3: Relative to total chain sums."
+        ["Relative to OTM/ATM Total", "Per Strike (Row)", "Relative to Full Chain"],
+        help="Mode 1: Relative to OTM/ATM sums. Mode 2: Per Strike Price. Mode 3: Relative to total chain sums."
     )
 
 @st.cache_data(show_spinner=False)

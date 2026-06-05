@@ -118,8 +118,8 @@ st.table(df)
 context: optionchain.OptionContext = res['context']
 
 st.write("---")
-if 'sentiment_styler' in res:
-    st.subheader("OTM Market Sentiment")
-    st.table(res['sentiment_styler'])
+if 'sentiment_summary_styler' in res:
+    st.subheader("Market Sentiment Summary")
+    st.table(res['sentiment_summary_styler'])
 else:
     st.warning("Sentiment summary data is missing from the results.")

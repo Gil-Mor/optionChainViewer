@@ -35,7 +35,8 @@ class OptionContext:
     def get_puts_strike_col_index(self) -> int:
         return self.df.columns.get_loc(self.puts_strike_col_name)
 
-    def get_otm_stats(self) -> None:
+    def get_total_stats(self) -> None:
+        """Calculates OTM, ATM, and Total metrics for Calls and Puts."""
         self.otm_calls = self.df[self.df[self.calls_strike_col_name] > self.current_price]
         self.otm_calls_open_interest_sum = self.otm_calls["Open Interest"].sum()
         self.otm_calls_volume_sum = self.otm_calls["Volume"].sum()
@@ -43,12 +44,36 @@ class OptionContext:
         self.otm_puts_open_interest_sum = self.otm_puts["Open Interest.1"].sum()
         self.otm_puts_volume_sum = self.otm_puts["Volume.1"].sum()
 
-    def get_otm_sentiment_styler(self) -> Styler:
-        """Creates a styled summary table for OTM sentiment using proportional bars."""
+        # ATM stats (specifically at the ATM Strike)
+        atm_calls = self.df[self.df[self.calls_strike_col_name] == self.atm_strike]
+        self.atm_calls_open_interest_sum = atm_calls["Open Interest"].sum()
+        self.atm_calls_volume_sum = atm_calls["Volume"].sum()
+
+        atm_puts = self.df[self.df[self.puts_strike_col_name] == self.atm_strike]
+        self.atm_puts_open_interest_sum = atm_puts["Open Interest.1"].sum()
+        self.atm_puts_volume_sum = atm_puts["Volume.1"].sum()
+
+        # Total stats for the entire chain
+        self.total_calls_open_interest_sum = self.df["Open Interest"].sum()
+        self.total_calls_volume_sum = self.df["Volume"].sum()
+        self.total_puts_open_interest_sum = self.df["Open Interest.1"].sum()
+        self.total_puts_volume_sum = self.df["Volume.1"].sum()
+
+    def get_sentiment_summary_styler(self) -> Styler:
+        """Creates a styled summary table for OTM, ATM, and Total sentiment using proportional bars."""
         data = {
-            'Metric': ['OTM Open Interest', 'OTM Volume'],
-            'Calls': [self.otm_calls_open_interest_sum, self.otm_calls_volume_sum],
-            'Puts': [self.otm_puts_open_interest_sum, self.otm_puts_volume_sum],
+            'Metric': [
+                'OTM Open Interest', 'ATM Open Interest', 'Total Open Interest',
+                'OTM Volume', 'ATM Volume', 'Total Volume'
+            ],
+            'Calls': [
+                self.otm_calls_open_interest_sum, self.atm_calls_open_interest_sum, self.total_calls_open_interest_sum,
+                self.otm_calls_volume_sum, self.atm_calls_volume_sum, self.total_calls_volume_sum
+            ],
+            'Puts': [
+                self.otm_puts_open_interest_sum, self.atm_puts_open_interest_sum, self.total_puts_open_interest_sum,
+                self.otm_puts_volume_sum, self.atm_puts_volume_sum, self.total_puts_volume_sum
+            ],
         }
         sentiment_df = pd.DataFrame(data)
         sentiment_df['P/C Ratio'] = sentiment_df.apply(
@@ -378,6 +403,9 @@ def main(
 
     df_context = OptionContext(df, ticker, current_price)
 
+    # Calculate stats on the full dataframe before trimming/flipping
+    df_context.get_total_stats()
+
     df_context = calls_puts_side_by_side_distance_from_strike(
         df_context,
         flip_strikes,
@@ -385,7 +413,6 @@ def main(
     )
 
     df_context.color_change_values()
-    df_context.get_otm_stats()
 
     return {
         "styled_dataframe": df_context.styled_df,
@@ -393,5 +420,5 @@ def main(
         "expiration_date": expiration_date,
         "available_expiration_dates": available_expiration_dates,
         "context": df_context,
-        "sentiment_styler": df_context.get_otm_sentiment_styler()
+        "sentiment_summary_styler": df_context.get_sentiment_summary_styler()
     }

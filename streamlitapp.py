@@ -119,7 +119,7 @@ st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1
 
 st.write(f"Expiration Date: {res['expiration_date']}")
 if not is_market_open():
-    st.info("🌙 US Markets are currently closed. Intraday Volume data is reset, but Open Interest remains static from the last close.")
+    st.info("🌙 US Markets are currently closed. Data may remain from the last close or be missing.")
 
 df = res['styled_dataframe']
 st.table(df)

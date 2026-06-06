@@ -61,8 +61,8 @@ with st.sidebar:
     st.subheader("Visualization")
     bar_scaling_mode = st.radio(
         "Proportional Bar Scaling",
-        ["Relative to OTM/ATM Total", "Per Strike (Row)", "Relative to Full Chain"],
-        help="Mode 1: Relative to OTM/ATM sums. Mode 2: Per Strike Price. Mode 3: Relative to total chain sums."
+        ["Relative to OTM/ITM/ATM Groups", "Per Strike (Row)", "Relative to Full Chain"],
+        help="Mode 1: Normalize bars relative to their specific group peak (OTM, ITM, or ATM). Mode 2: Relative to row total. Mode 3: Relative to the single largest peak in the entire chain."
     )
 
 @st.cache_data(show_spinner=False)
@@ -119,7 +119,7 @@ st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1
 
 st.write(f"Expiration Date: {res['expiration_date']}")
 if not is_market_open():
-    st.info("🌙 US Markets are currently closed. Open Interest are not available.")
+    st.info("🌙 US Markets are currently closed. Intraday Volume data is reset, but Open Interest remains static from the last close.")
 
 df = res['styled_dataframe']
 st.table(df)
@@ -127,7 +127,7 @@ context: optionchain.OptionContext = res['context']
 
 st.write("---")
 if 'sentiment_summary_styler' in res:
-    st.subheader("Market Sentiment Summary")
+    st.subheader("Market Sentiment: OTM vs ITM")
     st.table(res['sentiment_summary_styler'])
 else:
     st.warning("Sentiment summary data is missing from the results.")

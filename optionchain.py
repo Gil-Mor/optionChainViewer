@@ -38,10 +38,10 @@ class OptionContext:
 
     def get_total_stats(self) -> None:
         """Calculates OTM, ATM, and Total metrics for Calls and Puts."""
-        self.otm_calls = self.df[self.df[self.calls_strike_col_name] > self.current_price]
+        self.otm_calls = self.df[(self.df[self.calls_strike_col_name] > self.current_price) & (self.df[self.calls_strike_col_name] != self.atm_strike)]
         self.otm_calls_open_interest_sum = self.otm_calls["Open Interest"].sum()
         self.otm_calls_volume_sum = self.otm_calls["Volume"].sum()
-        self.otm_puts = self.df[self.df[self.puts_strike_col_name] < self.current_price]
+        self.otm_puts = self.df[(self.df[self.puts_strike_col_name] < self.current_price) & (self.df[self.puts_strike_col_name] != self.atm_strike)]
         self.otm_puts_open_interest_sum = self.otm_puts["Open Interest.1"].sum()
         self.otm_puts_volume_sum = self.otm_puts["Volume.1"].sum()
 
@@ -60,12 +60,23 @@ class OptionContext:
         self.total_puts_open_interest_sum = self.df["Open Interest.1"].sum()
         self.total_puts_volume_sum = self.df["Volume.1"].sum()
 
-        # Max values for normalization in Modes 2 and 3
+        # Max values for normalization in Scaling Modes
         # Standard UI practice: scale relative to the Max strike in the group so bars are visible
         self.otm_max_oi = max(self.otm_calls["Open Interest"].max() if not self.otm_calls.empty else 0,
                               self.otm_puts["Open Interest.1"].max() if not self.otm_puts.empty else 0, 1)
         self.otm_max_vol = max(self.otm_calls["Volume"].max() if not self.otm_calls.empty else 0,
                                self.otm_puts["Volume.1"].max() if not self.otm_puts.empty else 0, 1)
+
+        self.itm_calls = self.df[self.df[self.calls_strike_col_name] < self.current_price]
+        self.itm_puts = self.df[self.df[self.puts_strike_col_name] > self.current_price]
+        self.itm_calls_open_interest_sum = self.itm_calls["Open Interest"].sum()
+        self.itm_calls_volume_sum = self.itm_calls["Volume"].sum()
+        self.itm_puts_open_interest_sum = self.itm_puts["Open Interest.1"].sum()
+        self.itm_puts_volume_sum = self.itm_puts["Volume.1"].sum()
+        self.itm_max_oi = max(self.itm_calls["Open Interest"].max() if not self.itm_calls.empty else 0,
+                              self.itm_puts["Open Interest.1"].max() if not self.itm_puts.empty else 0, 1)
+        self.itm_max_vol = max(self.itm_calls["Volume"].max() if not self.itm_calls.empty else 0,
+                               self.itm_puts["Volume.1"].max() if not self.itm_puts.empty else 0, 1)
 
         atm_df = self.df[self.df[self.calls_strike_col_name] == self.atm_strike]
         self.atm_max_oi = max(atm_df["Open Interest"].max() if not atm_df.empty else 0,
@@ -77,19 +88,19 @@ class OptionContext:
         self.total_max_vol = max(self.df["Volume"].max(), self.df["Volume.1"].max(), 1)
 
     def get_sentiment_summary_styler(self) -> Styler:
-        """Creates a styled summary table for OTM, ATM, and Total sentiment using proportional bars."""
+        """Creates a styled summary table for OTM, ATM, ITM, and Total sentiment using proportional bars."""
         data = {
             'Metric': [
-                'OTM Open Interest', 'ATM Open Interest', 'Total Open Interest',
-                'OTM Volume', 'ATM Volume', 'Total Volume'
+                'OTM Open Interest', 'ITM Open Interest', 'ATM Open Interest', 'Total Open Interest',
+                'OTM Volume', 'ITM Volume', 'ATM Volume', 'Total Volume'
             ],
             'Calls': [
-                self.otm_calls_open_interest_sum, self.atm_calls_open_interest_sum, self.total_calls_open_interest_sum,
-                self.otm_calls_volume_sum, self.atm_calls_volume_sum, self.total_calls_volume_sum
+                self.otm_calls_open_interest_sum, self.itm_calls_open_interest_sum, self.atm_calls_open_interest_sum, self.total_calls_open_interest_sum,
+                self.otm_calls_volume_sum, self.itm_calls_volume_sum, self.atm_calls_volume_sum, self.total_calls_volume_sum
             ],
             'Puts': [
-                self.otm_puts_open_interest_sum, self.atm_puts_open_interest_sum, self.total_puts_open_interest_sum,
-                self.otm_puts_volume_sum, self.atm_puts_volume_sum, self.total_puts_volume_sum
+                self.otm_puts_open_interest_sum, self.itm_puts_open_interest_sum, self.atm_puts_open_interest_sum, self.total_puts_open_interest_sum,
+                self.otm_puts_volume_sum, self.itm_puts_volume_sum, self.atm_puts_volume_sum, self.total_puts_volume_sum
             ],
         }
         sentiment_df = pd.DataFrame(data)
@@ -306,7 +317,7 @@ def duplicate_and_rename_strike(df: pd.DataFrame) -> pd.DataFrame:
 
     return df_result
 
-def highlight_cell(styler: Styler, col_name: str, val: float, color: str = "#4798a5") -> Styler:
+def highlight_cell(styler: Styler, col_name: str, val: float, color: str = "#3D7192") -> Styler:
     def style_atm_strike(s, target_val):
         return [f'background-color: {color}; font-weight: bold' if val == target_val else None for val in s]
 
@@ -371,21 +382,33 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
             strike = df.loc[idx, strike_col]
 
             if is_left: # Calls
-                is_otm_atm = strike >= context.current_price
+                if strike == context.atm_strike:
+                    return "#005E98"
+
+                # Calls: OTM if Strike > Price, ITM if Strike < Price
+                is_otm = (strike > context.current_price)
                 if current_is_oi:
-                    return "#157347" if is_otm_atm else "#0a3622" # Darker Green / Deep Green
+                    return "#157347" if is_otm else "#0a3622" # Darker Green / Deep Green
                 else:
-                    return "#198754" if is_otm_atm else "#0f5132" # Std Green / Forest Green
+                    return "#198754" if is_otm else "#0f5132" # Std Green / Forest Green
             else: # Puts
-                is_otm_atm = strike <= context.current_price
+                if strike == context.atm_strike:
+                    return "#005E98"
+
+                # Puts: OTM if Strike < Price, ITM if Strike > Price
+                is_otm = (strike < context.current_price)
                 if current_is_oi:
-                    return "#bb2d3b" if is_otm_atm else "#58151c" # Strong Red / Deep Red
+                    return "#bb2d3b" if is_otm else "#58151c" # Strong Red / Deep Red
                 else:
-                    return "#dc3545" if is_otm_atm else "#842029" # Std Red / Wine Red
+                    return "#dc3545" if is_otm else "#842029" # Std Red / Wine Red
 
         # Handle sentiment summary table which has a 'Metric' column but no strike data
         if 'Metric' in df.columns:
-            # Everything in the summary (OTM, ATM, Total) uses the vibrant/OTM shade.
+            metric_text = str(df.loc[idx, 'Metric'])
+            if "ATM" in metric_text:
+                return "#005E98"
+
+            # Everything else in the summary uses the vibrant shade.
             if is_left: # Calls
                 return "#157347" if current_is_oi else "#198754"
             else: # Puts
@@ -408,17 +431,16 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if mode == "Per Strike (Row)":
                         right_val = convert_comma_number(df.loc[idx, right_col])
                         denom = val + (right_val if not pd.isna(right_val) else 0)
-                    elif mode == "Relative to OTM/ATM Total" and 'Metric' not in df.columns:
+                    elif mode == "Relative to OTM/ITM/ATM Groups" and 'Metric' not in df.columns:
                         # Identify strike position to use localized Max-normalization
                         strike = df.loc[idx, context.calls_strike_col_name]
-                        if strike == context.atm_strike:
+
+                        if strike == context.atm_strike: # ATM
                             denom = context.atm_max_oi if is_oi else context.atm_max_vol
-                        elif strike > context.current_price:
-                            # OTM Call
+                        elif strike > context.current_price: # OTM Call
                             denom = context.otm_max_oi if is_oi else context.otm_max_vol
-                        else:
-                            # ITM Call - fall back to full chain max for perspective
-                            denom = global_ref
+                        else: # ITM Call
+                            denom = context.itm_max_oi if is_oi else context.itm_max_vol
                     else:
                         # Full Chain: Normalize against the single largest peak in the entire table
                         denom = global_ref
@@ -457,17 +479,16 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if mode == "Per Strike (Row)":
                         left_val = convert_comma_number(df.loc[idx, left_col])
                         denom = (left_val if not pd.isna(left_val) else 0) + val
-                    elif mode == "Relative to OTM/ATM Total" and 'Metric' not in df.columns:
+                    elif mode == "Relative to OTM/ITM/ATM Groups" and 'Metric' not in df.columns:
                         # Identify strike position for Puts
                         strike = df.loc[idx, context.puts_strike_col_name]
-                        if strike == context.atm_strike:
+
+                        if strike == context.atm_strike: # ATM
                             denom = context.atm_max_oi if is_oi else context.atm_max_vol
-                        elif strike < context.current_price:
-                            # OTM Put
+                        elif strike < context.current_price: # OTM Put
                             denom = context.otm_max_oi if is_oi else context.otm_max_vol
-                        else:
-                            # ITM Put
-                            denom = global_ref
+                        else: # ITM Put
+                            denom = context.itm_max_oi if is_oi else context.itm_max_vol
                     else:
                         denom = global_ref
 

@@ -49,13 +49,19 @@ def get_options_chain_table(symbol: str,
         calls = calls.fillna(0)
         puts = puts.fillna(0)
 
+        # Aggregate by strike to handle cases where multiple contracts exist for the same strike.
+        # This prevents Cartesian product inflation during the merge.
+        agg_map = {'lastPrice': 'mean', 'change': 'mean', 'percentChange': 'mean', 'volume': 'sum', 'openInterest': 'sum'}
+        calls = calls.groupby('strike').agg(agg_map).reset_index()
+        puts = puts.groupby('strike').agg(agg_map).reset_index()
+
         # Prepare calls data - use the actual change and percentChange columns
         calls_formatted = calls[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].copy()
         calls_formatted.columns = ['Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest', 'Strike']
 
         # Prepare puts data - use the actual change and percentChange columns
-        puts_formatted = puts[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].copy()
-        puts_formatted.columns = ['Put_LastPrice', 'Put_Change', 'Put_ChangePct', 'Put_Volume', 'Put_OpenInterest', 'Put_Strike']
+        puts_formatted = puts[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].rename(
+            columns={'lastPrice': 'Put_LastPrice', 'change': 'Put_Change', 'percentChange': 'Put_ChangePct', 'volume': 'Put_Volume', 'openInterest': 'Put_OpenInterest', 'strike': 'Put_Strike'})
 
         # Merge on strike price
         if keep_only_common_strikes:

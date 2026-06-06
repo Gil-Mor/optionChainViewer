@@ -67,8 +67,8 @@ class OptionContext:
         self.otm_max_vol = max(self.otm_calls["Volume"].max() if not self.otm_calls.empty else 0,
                                self.otm_puts["Volume.1"].max() if not self.otm_puts.empty else 0, 1)
 
-        self.itm_calls = self.df[self.df[self.calls_strike_col_name] < self.current_price]
-        self.itm_puts = self.df[self.df[self.puts_strike_col_name] > self.current_price]
+        self.itm_calls = self.df[(self.df[self.calls_strike_col_name] < self.current_price) & (self.df[self.calls_strike_col_name] != self.atm_strike)]
+        self.itm_puts = self.df[(self.df[self.puts_strike_col_name] > self.current_price) & (self.df[self.puts_strike_col_name] != self.atm_strike)]
         self.itm_calls_open_interest_sum = self.itm_calls["Open Interest"].sum()
         self.itm_calls_volume_sum = self.itm_calls["Volume"].sum()
         self.itm_puts_open_interest_sum = self.itm_puts["Open Interest.1"].sum()
@@ -546,6 +546,9 @@ def trim_rows_symmetric_radius(
     pandas DataFrame trimmed symmetrically around pivot_row
     """
 
+    if rows_to_trim == 0:
+        return df # No trimming
+
     if pivot_row < 0 or pivot_row >= len(df):
         raise ValueError(f"Pivot row {pivot_row} is out of bounds for DataFrame with {len(df)} rows")
 
@@ -553,9 +556,7 @@ def trim_rows_symmetric_radius(
     rows_before_pivot = pivot_row
     rows_after_pivot = len(df) - pivot_row - 1
     symmetric_radius = min(rows_before_pivot, rows_after_pivot)
-    if rows_to_trim:
-        symmetric_radius = min(rows_before_pivot, rows_after_pivot, rows_to_trim)
-
+    symmetric_radius = min(rows_before_pivot, rows_after_pivot, rows_to_trim)
 
     # Define the symmetric range around pivot
     start_row = pivot_row - symmetric_radius
@@ -574,13 +575,10 @@ def calls_puts_side_by_side_distance_from_strike(
     bar_scaling_mode: str = 'Per Strike (Row)'
 ) -> OptionContext:
 
-    if trim_around_strike:
-        df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
-        # Rows indexes changed. Get ATM strike row again
-        df_context.update_strike_row()
+    df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
+    df_context.update_strike_row() # Rows indexes might have changed.
 
     if flip_strikes:
-        df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
         df_context.df = duplicate_and_rename_strike(df_context.df)
         df_context.calls_strike_col_name = "Calls Strike"
         df_context.puts_strike_col_name = "Puts Strike"
@@ -628,15 +626,15 @@ def main(
 
     df_context = OptionContext(df, ticker, current_price)
 
-    # Calculate stats on the full dataframe before trimming/flipping
-    df_context.get_total_stats()
-
+    # Apply trimming and flipping first to get the final displayed DataFrame
     df_context = calls_puts_side_by_side_distance_from_strike(
         df_context,
         flip_strikes,
         trim_around_strike,
         bar_scaling_mode
     )
+    # Now calculate stats on the (potentially trimmed) dataframe
+    df_context.get_total_stats()
 
     df_context.color_change_values()
 

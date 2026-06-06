@@ -348,12 +348,12 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
     # This creates a stable "field" where distribution curves become visible.
     if 'Metric' in df.columns:
         # Logic for Sentiment Summary table
-        global_ref = max(df[left_col].max() + df[right_col].max(), 1)
+        global_ref = max(df[left_col].max(), df[right_col].max(), 1)
     else:
         # Logic for main options chain table
         max_c = context.df["Open Interest"].max() if is_oi else context.df["Volume"].max()
         max_p = context.df["Open Interest.1"].max() if is_oi else context.df["Volume.1"].max()
-        global_ref = max(max_c + max_p, 1)
+        global_ref = max(max_c, max_p, 1)
 
     # Row-local sum (used for Mode 1)
     # We pre-calculate sums if needed, but row-local is handled inside the loop.
@@ -408,14 +408,26 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if mode == "Per Strike (Row)":
                         right_val = convert_comma_number(df.loc[idx, right_col])
                         denom = val + (right_val if not pd.isna(right_val) else 0)
+                    elif mode == "Relative to OTM/ATM Total" and 'Metric' not in df.columns:
+                        # Identify strike position to use localized Max-normalization
+                        strike = df.loc[idx, context.calls_strike_col_name]
+                        if strike == context.atm_strike:
+                            denom = context.atm_max_oi if is_oi else context.atm_max_vol
+                        elif strike > context.current_price:
+                            # OTM Call
+                            denom = context.otm_max_oi if is_oi else context.otm_max_vol
+                        else:
+                            # ITM Call - fall back to full chain max for perspective
+                            denom = global_ref
                     else:
-                        # Use consistent global reference to reveal the distribution curve
+                        # Full Chain: Normalize against the single largest peak in the entire table
                         denom = global_ref
 
                     if denom > 0:
-                        # Apply Square Root scaling to reduce skewness. This makes smaller values
-                        # and "next in line" strikes much more visible relative to major spikes.
-                        percentage = (math.sqrt(val) / math.sqrt(denom)) * 100
+                        # Use a Power Transform (x^0.7) which is milder than Square Root (x^0.5).
+                        # This preserves the "curve" and differentiation between high-value strikes
+                        # while still boosting visibility for smaller values.
+                        percentage = math.pow(val / denom, 0.7) * 100
                         percentage = min(percentage, 98.0)
 
                         styles[idx] = f'''
@@ -445,12 +457,23 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                     if mode == "Per Strike (Row)":
                         left_val = convert_comma_number(df.loc[idx, left_col])
                         denom = (left_val if not pd.isna(left_val) else 0) + val
+                    elif mode == "Relative to OTM/ATM Total" and 'Metric' not in df.columns:
+                        # Identify strike position for Puts
+                        strike = df.loc[idx, context.puts_strike_col_name]
+                        if strike == context.atm_strike:
+                            denom = context.atm_max_oi if is_oi else context.atm_max_vol
+                        elif strike < context.current_price:
+                            # OTM Put
+                            denom = context.otm_max_oi if is_oi else context.otm_max_vol
+                        else:
+                            # ITM Put
+                            denom = global_ref
                     else:
                         denom = global_ref
 
                     if denom > 0:
-                        # Apply Square Root scaling
-                        percentage = (math.sqrt(val) / math.sqrt(denom)) * 100
+                        # Apply the same 0.7 power transform for consistency
+                        percentage = math.pow(val / denom, 0.7) * 100
                         percentage = min(percentage, 98.0)
 
                         styles[idx] = f'''

@@ -91,16 +91,16 @@ class OptionContext:
         """Creates a styled summary table for OTM, ATM, ITM, and Total sentiment using proportional bars."""
         data = {
             'Metric': [
-                'OTM Open Interest', 'ITM Open Interest', 'ATM Open Interest', 'Total Open Interest',
-                'OTM Volume', 'ITM Volume', 'ATM Volume', 'Total Volume'
+                'ITM Open Interest', 'ATM Open Interest', 'OTM Open Interest', 'Total Open Interest',
+                'ITM Volume', 'ATM Volume', 'OTM Volume', 'Total Volume'
             ],
             'Calls': [
-                self.otm_calls_open_interest_sum, self.itm_calls_open_interest_sum, self.atm_calls_open_interest_sum, self.total_calls_open_interest_sum,
-                self.otm_calls_volume_sum, self.itm_calls_volume_sum, self.atm_calls_volume_sum, self.total_calls_volume_sum
+                self.itm_calls_open_interest_sum, self.atm_calls_open_interest_sum, self.otm_calls_open_interest_sum, self.total_calls_open_interest_sum,
+                self.itm_calls_volume_sum, self.atm_calls_volume_sum, self.otm_calls_volume_sum, self.total_calls_volume_sum
             ],
             'Puts': [
-                self.otm_puts_open_interest_sum, self.itm_puts_open_interest_sum, self.atm_puts_open_interest_sum, self.total_puts_open_interest_sum,
-                self.otm_puts_volume_sum, self.itm_puts_volume_sum, self.atm_puts_volume_sum, self.total_puts_volume_sum
+                self.itm_puts_open_interest_sum, self.atm_puts_open_interest_sum, self.otm_puts_open_interest_sum, self.total_puts_open_interest_sum,
+                self.itm_puts_volume_sum, self.atm_puts_volume_sum, self.otm_puts_volume_sum, self.total_puts_volume_sum
             ],
         }
         sentiment_df = pd.DataFrame(data)

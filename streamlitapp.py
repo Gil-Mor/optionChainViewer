@@ -122,6 +122,12 @@ if not is_market_open():
     st.info("🌙 US Markets are currently closed. Data may remain from the last close or be missing.")
 
 df = res['styled_dataframe']
+
+# Create column headers separate from the table to maintain easy table handling
+header_col1, header_col2, header_col3 = st.columns([5, 2 if flip_strikes else 1, 5])
+header_col1.markdown("<h4 style='text-align: center; color: #157347; margin-bottom: -10px;'>CALLS</h4>", unsafe_allow_html=True)
+header_col3.markdown("<h4 style='text-align: center; color: #bb2d3b; margin-bottom: -10px;'>PUTS</h4>", unsafe_allow_html=True)
+
 st.table(df)
 context: optionchain.OptionContext = res['context']
 

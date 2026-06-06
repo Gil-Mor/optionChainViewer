@@ -103,8 +103,8 @@ class OptionContext:
             'Calls',
             'Puts',
             self,
-            left_color="#66C76673",
-            right_color="#B9696384",
+            left_color="#198754",
+            right_color="#dc3545",
             text_color="white"
         )
         styler = styler.format({'Calls': '{:,.0f}', 'Puts': '{:,.0f}', 'P/C Ratio': '{:.2f}'})
@@ -234,7 +234,7 @@ class OptionContext:
             alpha = (capped_val / max_val) * 0.6 + 0.1
 
             if val > 0:
-                return f'background-color: rgba(0, 255, 0, {alpha})'
+                return f'background-color: rgba(0, 200, 0, {alpha})'
             return f'background-color: rgba(255, 0, 0, {alpha})'
         self.styled_df = self.styled_df.map(color_gradient, subset=['% Change', '% Change.1'])
 
@@ -351,6 +351,41 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
     # Row-local sum (used for Mode 1)
     # We pre-calculate sums if needed, but row-local is handled inside the loop.
 
+    def get_dynamic_color(is_left, idx):
+        # Determine if this row is OI or Volume.
+        # Fallback to column-based detection for the main chain.
+        current_is_oi = is_oi
+        if 'Metric' in df.columns:
+            current_is_oi = "Open Interest" in str(df.loc[idx, 'Metric'])
+
+        # Use strike price to determine color if we're in the main options chain table
+        if context.calls_strike_col_name in df.columns:
+            strike_col = context.calls_strike_col_name if is_left else context.puts_strike_col_name
+            strike = df.loc[idx, strike_col]
+
+            if is_left: # Calls
+                is_otm_atm = strike >= context.current_price
+                if current_is_oi:
+                    return "#157347" if is_otm_atm else "#0a3622" # Darker Green / Deep Green
+                else:
+                    return "#198754" if is_otm_atm else "#0f5132" # Std Green / Forest Green
+            else: # Puts
+                is_otm_atm = strike <= context.current_price
+                if current_is_oi:
+                    return "#bb2d3b" if is_otm_atm else "#58151c" # Strong Red / Deep Red
+                else:
+                    return "#dc3545" if is_otm_atm else "#842029" # Std Red / Wine Red
+
+        # Handle sentiment summary table which has a 'Metric' column but no strike data
+        if 'Metric' in df.columns:
+            # Everything in the summary (OTM, ATM, Total) uses the vibrant/OTM shade.
+            if is_left: # Calls
+                return "#157347" if current_is_oi else "#198754"
+            else: # Puts
+                return "#bb2d3b" if current_is_oi else "#dc3545"
+
+        return left_color if is_left else right_color
+
     def apply_bar_styling(s):
         styles = [None] * len(s)
 
@@ -358,6 +393,7 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
         if s.name == left_col:
             # Left column: bars from left to right
             for idx in s.index:
+                current_color = get_dynamic_color(True, idx)
                 try:
                     left_val = convert_comma_number(df.loc[idx, left_col])
                     right_val = convert_comma_number(df.loc[idx, right_col])
@@ -383,8 +419,8 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to right,
-                                {left_color} 0%,
-                                {left_color} {percentage:.1f}%,
+                                {current_color} 0%,
+                                {current_color} {percentage:.1f}%,
                                 transparent {percentage:.1f}%,
                                 transparent 100%
                             );
@@ -399,6 +435,7 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
         elif s.name == right_col:
             # Right column: bars from right to left
             for idx in s.index:
+                current_color = get_dynamic_color(False, idx)
                 try:
                     left_val = convert_comma_number(df.loc[idx, left_col])
                     right_val = convert_comma_number(df.loc[idx, right_col])
@@ -424,8 +461,8 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to left,
-                                {right_color} 0%,
-                                {right_color} {percentage:.1f}%,
+                                {current_color} 0%,
+                                {current_color} {percentage:.1f}%,
                                 transparent {percentage:.1f}%,
                                 transparent 100%
                             );
@@ -516,8 +553,8 @@ def calls_puts_side_by_side_distance_from_strike(
 
 
     df_context.styled_df = df_context.df.style
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode, "#64a375c6", "#ad6368c7")
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode, "#8dc170b4", "#e6957ea6")
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
+    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode)
     df_context.styled_df = format_style(df_context.styled_df)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)

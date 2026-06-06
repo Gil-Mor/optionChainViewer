@@ -131,3 +131,9 @@ if 'sentiment_summary_styler' in res:
     st.table(res['sentiment_summary_styler'])
 else:
     st.warning("Sentiment summary data is missing from the results.")
+
+if 'technical_breakdown' in res:
+    st.write("---")
+    st.subheader("Technical Breakdown")
+    st.table(res['technical_breakdown'])
+    st.caption("Disclaimer!!!: These observations are based on heuristic rules and do not constitute financial advice.")

@@ -111,6 +111,114 @@ class OptionContext:
         styler = styler.set_properties(**{'text-align': 'center'})
         return styler
 
+    def get_technical_breakdown(self) -> list[dict]:
+        """Generates a technical breakdown based on positioning rules."""
+        breakdown = []
+
+        # Rule 1: Total Put/Call Open Interest Ratio (Overall Balance)
+        pc_ratio = self.total_puts_open_interest_sum / self.total_calls_open_interest_sum if self.total_calls_open_interest_sum > 0 else 1.0
+
+        if pc_ratio < 0.5:
+            status = "Strong Bullish Skew"
+            rule_ref = "P/C Ratio < 0.5"
+            mm_inst = "Market Makers (MMs) are likely net short calls. If price rallies, MMs must buy shares to hedge, potentially fueling a 'gamma squeeze'. Retail is heavily long calls."
+        elif pc_ratio < 0.8:
+            status = "Moderate Bullish Skew"
+            rule_ref = "0.5 <= P/C Ratio < 0.8"
+            mm_inst = "Positive sentiment. Institutions may be selling calls for income. Retail sentiment is optimistic."
+        elif pc_ratio <= 1.2:
+            status = "Balanced Market"
+            rule_ref = "0.8 <= P/C Ratio <= 1.2"
+            mm_inst = "Market is in equilibrium. No clear dominance. MMs are neutral, collecting spreads. Retail and institutions are not showing directional consensus."
+        elif pc_ratio <= 2.0:
+            status = "Moderate Bearish Skew"
+            rule_ref = "1.2 < P/C Ratio <= 2.0"
+            mm_inst = "Hedging is dominant. Institutions are buying puts for protection. MMs are providing liquidity at higher premiums."
+        else:
+            status = "Strong Bearish Skew"
+            rule_ref = "P/C Ratio > 2.0"
+            mm_inst = "Extreme fear or heavy hedging. MMs are net short puts and may sell underlying aggressively if price drops to stay delta-neutral (Gamma acceleration)."
+
+        breakdown.append({
+            "Aspect": "Overall Balance",
+            "Status": status,
+            "Logic": f"Rule: {rule_ref} (Actual: {pc_ratio:.2f})",
+            "Market Implication (MMs/Institutions vs Retail)": mm_inst
+        })
+
+        # Rule 2: OTM Distribution (Speculative Skew)
+        otm_call_oi = self.otm_calls_open_interest_sum
+        otm_put_oi = self.otm_puts_open_interest_sum
+        otm_ratio = otm_call_oi / otm_put_oi if otm_put_oi > 0 else 1.0
+
+        if otm_ratio > 2.0:
+            status = "Strong OTM Call Skew (Lotto Bias)"
+            mm_inst = "Retail is buying cheap 'lottery ticket' calls. Institutions are likely the sellers (smart money), betting against extreme moves."
+        elif otm_ratio > 1.2:
+            status = "Moderate OTM Call Skew"
+            mm_inst = "Speculative upside interest outweighs downside hedging. Market participants are positioning for a breakout."
+        elif 0.8 <= otm_ratio <= 1.2:
+            status = "Balanced OTM Distribution"
+            mm_inst = "Symmetric positioning. Market expects standard volatility in either direction. No extreme greed or fear."
+        elif otm_ratio >= 0.5:
+            status = "Moderate OTM Put Skew"
+            mm_inst = "Elevated fear. Protective puts are being accumulated by institutions to hedge portfolios."
+        else:
+            status = "Strong OTM Put Skew (Panic/Hedging)"
+            mm_inst = "Institutions are loading up on crash protection. MMs are charging high premiums due to expansion in implied volatility."
+
+        breakdown.append({
+            "Aspect": "OTM Skew (Speculation)",
+            "Status": status,
+            "Logic": f"OTM Call/Put Ratio: {otm_ratio:.2f}",
+            "Market Implication (MMs/Institutions vs Retail)": mm_inst
+        })
+
+        # Rule 3: Volume vs Open Interest (Market Urgency)
+        total_oi = self.total_calls_open_interest_sum + self.total_puts_open_interest_sum
+        total_vol = self.total_calls_volume_sum + self.total_puts_volume_sum
+        vol_oi_ratio = total_vol / total_oi if total_oi > 0 else 0
+
+        if vol_oi_ratio > 0.5:
+            status = "High Urgency / Fresh Interest"
+            mm_inst = "Volume is very high relative to OI. This suggests large-scale 'opening' or 'closing' of positions. Institutions are likely repositioning for a major move or earnings. Retail is often 'chasing' the trend here."
+        elif vol_oi_ratio > 0.15:
+            status = "Healthy Turnover"
+            mm_inst = "Normal market participation. Positions are being rolled or adjusted, but there is no sign of a massive structural shift in sentiment."
+        else:
+            status = "Low Conviction / Consolidation"
+            mm_inst = "Volume is low relative to existing positions. Market participants are standing pat. Expect range-bound price action as the 'status quo' remains unchallenged."
+
+        breakdown.append({
+            "Aspect": "Market Urgency (Vol/OI)",
+            "Status": status,
+            "Logic": f"Vol/OI Ratio: {vol_oi_ratio:.2f}",
+            "Market Implication (MMs/Institutions vs Retail)": mm_inst
+        })
+
+        # Rule 4: Key Technical Levels (OI Walls)
+        # Find strikes with max Call OI and max Put OI
+        max_call_idx = self.df["Open Interest"].idxmax()
+        max_put_idx = self.df["Open Interest.1"].idxmax()
+
+        call_wall = self.df.loc[max_call_idx, self.calls_strike_col_name]
+        put_wall = self.df.loc[max_put_idx, self.puts_strike_col_name]
+
+        status_text = f"Resistance: {call_wall} | Support: {put_wall}"
+
+        breakdown.append({
+            "Aspect": "Institutional 'Walls'",
+            "Status": status_text,
+            "Logic": "Identifying strikes with the highest Open Interest concentration.",
+            "Market Implication (MMs/Institutions vs Retail)": (
+                f"The Call Wall at {call_wall} acts as a ceiling where MMs are net sellers, creating heavy resistance. "
+                f"The Put Wall at {put_wall} acts as a floor where institutions have bought protection. "
+                "Price often 'pins' or bounces between these two levels as expiration approaches."
+            )
+        })
+
+        return breakdown
+
     def color_change_values(self) -> None:
         def color_gradient(val):
             if pd.isna(val) or val == 0:
@@ -462,5 +570,6 @@ def main(
         "expiration_date": expiration_date,
         "available_expiration_dates": available_expiration_dates,
         "context": df_context,
-        "sentiment_summary_styler": df_context.get_sentiment_summary_styler()
+        "sentiment_summary_styler": df_context.get_sentiment_summary_styler(),
+        "technical_breakdown": df_context.get_technical_breakdown()
     }

@@ -28,7 +28,7 @@ def is_market_open():
     return market_open <= now <= market_close
 
 popular_tickers = set([
-        'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA'
+        'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'DOW'
     ])
 
 @st.cache_data
@@ -72,9 +72,11 @@ def get_cached_options_data(ticker_symbol, selected_exp):
     df, target_exp, all_exps = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
 
     ticker_obj = yf.Ticker(ticker_symbol)
+    info = ticker_obj.info
+    name = info.get('longName')
     fast = ticker_obj.fast_info
-    price = fast.get('last_price') or ticker_obj.info.get('regularMarketPrice')
-    prev_close = fast.get('previous_close') or ticker_obj.info.get('regularMarketPreviousClose')
+    price = fast.get('last_price') or info.get('regularMarketPrice')
+    prev_close = fast.get('previous_close') or info.get('regularMarketPreviousClose')
 
     change = None
     percent_change = None
@@ -82,10 +84,10 @@ def get_cached_options_data(ticker_symbol, selected_exp):
         change = price - prev_close
         percent_change = (change / prev_close) * 100
 
-    return df, target_exp, all_exps, price, change, percent_change
+    return df, target_exp, all_exps, price, change, percent_change, name
 
 with st.spinner(f"Loading {ticker} data..."):
-    raw_df, target_exp, all_exps, current_price, price_change, price_pct_change = get_cached_options_data(ticker, exp_date)
+    raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name = get_cached_options_data(ticker, exp_date)
 
 res = optionchain.main(ticker,
     df=raw_df,
@@ -94,7 +96,8 @@ res = optionchain.main(ticker,
     current_price=current_price,
     flip_strikes=flip_strikes,
     trim_around_strike=trim_around_strike,
-    bar_scaling_mode=bar_scaling_mode)
+    bar_scaling_mode=bar_scaling_mode,
+    company_name=company_name)
 
 if res is None:
     st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")
@@ -102,7 +105,8 @@ if res is None:
 
 # Results
 st.write("---")
-st.subheader(f"Ticker: {ticker}")
+display_name = f" - {res['company_name']}" if res.get('company_name') else ""
+st.subheader(f"Ticker: {ticker}{display_name}")
 
 price_color = "#4798a5"
 price_display = f"Current Price: {current_price:.2f}"

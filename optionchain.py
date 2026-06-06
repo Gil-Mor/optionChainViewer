@@ -607,7 +607,8 @@ def main(
     current_price: float = None,
     flip_strikes: bool = False,
     trim_around_strike: int = 0,
-    bar_scaling_mode: str = 'Per Strike (Row)'
+    bar_scaling_mode: str = 'Per Strike (Row)',
+    company_name: str = None
 ):
     if df is not None:
         pass
@@ -620,9 +621,13 @@ def main(
         return None
 
     if not current_price:
-        current_price = yfinance.Ticker(ticker).info['regularMarketPrice']
+        ticker_obj = yfinance.Ticker(ticker)
+        info = ticker_obj.info
+        current_price = info.get('regularMarketPrice')
         current_price = float(current_price)
         print(f"Current price is: {current_price}")
+        if not company_name:
+            company_name = info.get('longName')
 
     df_context = OptionContext(df, ticker, current_price)
 
@@ -645,5 +650,6 @@ def main(
         "available_expiration_dates": available_expiration_dates,
         "context": df_context,
         "sentiment_summary_styler": df_context.get_sentiment_summary_styler(),
-        "technical_breakdown": df_context.get_technical_breakdown()
+        "technical_breakdown": df_context.get_technical_breakdown(),
+        "company_name": company_name
     }

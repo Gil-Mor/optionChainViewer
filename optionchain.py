@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 from pandas.io.formats.style import Styler
 import yfinanceGetOptions as yfi
@@ -342,11 +343,17 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
     """
     is_oi = "Open Interest" in left_col
 
-    # For Modes 2 and 3, we scale relative to the Maximum value in that category
-    # rather than the Sum. This is the UI standard for in-cell data bars.
-    ref_all = context.total_max_oi if is_oi else context.total_max_vol
-    ref_otm = context.otm_max_oi if is_oi else context.otm_max_vol
-    ref_atm = context.atm_max_oi if is_oi else context.atm_max_vol
+    # Determine a global reference for comparison across rows.
+    # We normalize against the sum of the largest Put and largest Call (as suggested).
+    # This creates a stable "field" where distribution curves become visible.
+    if 'Metric' in df.columns:
+        # Logic for Sentiment Summary table
+        global_ref = max(df[left_col].max() + df[right_col].max(), 1)
+    else:
+        # Logic for main options chain table
+        max_c = context.df["Open Interest"].max() if is_oi else context.df["Volume"].max()
+        max_p = context.df["Open Interest.1"].max() if is_oi else context.df["Volume.1"].max()
+        global_ref = max(max_c + max_p, 1)
 
     # Row-local sum (used for Mode 1)
     # We pre-calculate sums if needed, but row-local is handled inside the loop.
@@ -395,27 +402,22 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
             for idx in s.index:
                 current_color = get_dynamic_color(True, idx)
                 try:
-                    left_val = convert_comma_number(df.loc[idx, left_col])
-                    right_val = convert_comma_number(df.loc[idx, right_col])
+                    val = convert_comma_number(df.loc[idx, left_col])
+                    if pd.isna(val) or val <= 0: continue
 
-                    if pd.isna(left_val): continue
+                    if mode == "Per Strike (Row)":
+                        right_val = convert_comma_number(df.loc[idx, right_col])
+                        denom = val + (right_val if not pd.isna(right_val) else 0)
+                    else:
+                        # Use consistent global reference to reveal the distribution curve
+                        denom = global_ref
 
-                    if mode == "Relative to Full Chain":
-                        denominator = ref_all
-                    elif mode == "Relative to OTM/ATM Total":
-                        strike = df.loc[idx, context.calls_strike_col_name]
-                        if strike == context.atm_strike:
-                            denominator = ref_atm
-                        elif strike > context.current_price: # OTM Call
-                            denominator = ref_otm
-                        else: # ITM Call - fall back to total or row-local
-                            denominator = ref_all
-                    else: # Default: Per Strike (Row)
-                        denominator = left_val + (right_val if not pd.isna(right_val) else 0)
+                    if denom > 0:
+                        # Apply Square Root scaling to reduce skewness. This makes smaller values
+                        # and "next in line" strikes much more visible relative to major spikes.
+                        percentage = (math.sqrt(val) / math.sqrt(denom)) * 100
+                        percentage = min(percentage, 98.0)
 
-                    if denominator > 0:
-                        percentage = (left_val / denominator) * 100
-                        percentage = min(percentage, 100)
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to right,
@@ -437,27 +439,20 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
             for idx in s.index:
                 current_color = get_dynamic_color(False, idx)
                 try:
-                    left_val = convert_comma_number(df.loc[idx, left_col])
-                    right_val = convert_comma_number(df.loc[idx, right_col])
+                    val = convert_comma_number(df.loc[idx, right_col])
+                    if pd.isna(val) or val <= 0: continue
 
-                    if pd.isna(right_val): continue
+                    if mode == "Per Strike (Row)":
+                        left_val = convert_comma_number(df.loc[idx, left_col])
+                        denom = (left_val if not pd.isna(left_val) else 0) + val
+                    else:
+                        denom = global_ref
 
-                    if mode == "Relative to Full Chain":
-                        denominator = ref_all
-                    elif mode == "Relative to OTM/ATM Total":
-                        strike = df.loc[idx, context.puts_strike_col_name]
-                        if strike == context.atm_strike:
-                            denominator = ref_atm
-                        elif strike < context.current_price: # OTM Put
-                            denominator = ref_otm
-                        else: # ITM Put
-                            denominator = ref_all
-                    else: # Default: Per Strike (Row)
-                        denominator = (left_val if not pd.isna(left_val) else 0) + right_val
+                    if denom > 0:
+                        # Apply Square Root scaling
+                        percentage = (math.sqrt(val) / math.sqrt(denom)) * 100
+                        percentage = min(percentage, 98.0)
 
-                    if denominator > 0:
-                        percentage = (right_val / denominator) * 100
-                        percentage = min(percentage, 100)
                         styles[idx] = f'''
                             background: linear-gradient(
                                 to left,

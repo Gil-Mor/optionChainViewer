@@ -38,10 +38,54 @@ def get_available_dates(ticker_symbol):
     except Exception:
         return []
 
+if 'ticker' not in st.session_state:
+    st.session_state['ticker'] = 'NVDA'
+if 'pending_ticker' not in st.session_state:
+    st.session_state['pending_ticker'] = None
+if 'company_name_display' not in st.session_state:
+    st.session_state['company_name_display'] = ''
+
+# Apply pending ticker BEFORE the ticker widget renders (Streamlit forbids
+# writing to a widget's session_state key after the widget is instantiated)
+if st.session_state['pending_ticker']:
+    st.session_state['ticker'] = st.session_state['pending_ticker']
+    st.session_state['pending_ticker'] = None
+
 with st.sidebar:
     st.header("Settings")
     st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
-    ticker = st.text_input(label="Ticker", value="NVDA", placeholder="NVDA")
+    ticker = st.text_input(label="Ticker", placeholder="NVDA", key='ticker')
+
+    if st.session_state['company_name_display']:
+        st.caption(st.session_state['company_name_display'])
+
+    st.write("— search by name —")
+
+    # Inject CSS to hide the "Press Enter to submit form" helper text
+    st.markdown(
+        """
+        <style>
+        [data-testid="InputInstructions"] {
+            visibility: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    with st.form("name_search"):
+        name_query = st.text_input("Company / Security Name", placeholder="e.g. Nvidia")
+        search_submitted = st.form_submit_button("Search")
+    if search_submitted:
+        if name_query.strip():
+            with st.spinner("Looking up ticker..."):
+                import yfinanceGetOptions as yfi_module
+                found = yfi_module.get_ticker_from_name(name_query.strip())
+            if found:
+                st.session_state['pending_ticker'] = found
+                st.session_state['company_name_display'] = ''
+                st.rerun()
+            else:
+                st.warning(f"No ticker found for '{name_query}'.")
 
     available_dates = get_available_dates(ticker)
     if not available_dates:
@@ -88,6 +132,7 @@ def get_cached_options_data(ticker_symbol, selected_exp):
 
 with st.spinner(f"Loading {ticker} data..."):
     raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name = get_cached_options_data(ticker, exp_date)
+st.session_state['company_name_display'] = company_name or ''
 
 res = optionchain.main(ticker,
     df=raw_df,

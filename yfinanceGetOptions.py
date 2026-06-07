@@ -104,6 +104,17 @@ def get_options_chain_table(symbol: str,
         print(f"Error getting options data: {e}")
         return pd.DataFrame(), "", []
 
+def get_ticker_from_name(name: str) -> str | None:
+    """Return the best-match ticker symbol for a company/security name."""
+    try:
+        results = yf.Search(name, max_results=1).quotes
+        if results:
+            return results[0].get('symbol')
+    except Exception as e:
+        print(f"Error searching for '{name}': {e}")
+    return None
+
+
 if __name__ == "__main__":
     symbol = "AAPL"
     df, target_exp, exp_dates = get_options_chain_table(symbol)

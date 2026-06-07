@@ -360,11 +360,15 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
     if 'Metric' in df.columns:
         # Logic for Sentiment Summary table
         global_ref = max(df[left_col].max(), df[right_col].max(), 1)
+        calls_ref = global_ref
+        puts_ref = global_ref
     else:
         # Logic for main options chain table
         max_c = context.df["Open Interest"].max() if is_oi else context.df["Volume"].max()
         max_p = context.df["Open Interest.1"].max() if is_oi else context.df["Volume.1"].max()
         global_ref = max(max_c, max_p, 1)
+        calls_ref = max(max_c, 1)
+        puts_ref = max(max_p, 1)
 
     # Row-local sum (used for Mode 1)
     # We pre-calculate sums if needed, but row-local is handled inside the loop.
@@ -441,6 +445,8 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                             denom = context.otm_max_oi if is_oi else context.otm_max_vol
                         else: # ITM Call
                             denom = context.itm_max_oi if is_oi else context.itm_max_vol
+                    elif mode == "Per Side (Each side's own peak)":
+                        denom = calls_ref
                     else:
                         # Full Chain: Normalize against the single largest peak in the entire table
                         denom = global_ref
@@ -489,6 +495,8 @@ def style_proportional_bars(df: pd.DataFrame, styler: Styler, left_col, right_co
                             denom = context.otm_max_oi if is_oi else context.otm_max_vol
                         else: # ITM Put
                             denom = context.itm_max_oi if is_oi else context.itm_max_vol
+                    elif mode == "Per Side (Each side's own peak)":
+                        denom = puts_ref
                     else:
                         denom = global_ref
 
@@ -588,6 +596,10 @@ def calls_puts_side_by_side_distance_from_strike(
 
     df_context.df = flip_right_half_columns(df_context.df, start=df_context.get_puts_strike_col_index() + 1)
 
+    # Compute stats on the final (trimmed, flipped) DataFrame before styling.
+    # Mode "Relative to OTM/ITM/ATM Groups" reads atm_max_oi / otm_max_oi / itm_max_oi
+    # from the context, which are only available after get_total_stats() runs.
+    df_context.get_total_stats()
 
     df_context.styled_df = df_context.df.style
     df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
@@ -631,15 +643,13 @@ def main(
 
     df_context = OptionContext(df, ticker, current_price)
 
-    # Apply trimming and flipping first to get the final displayed DataFrame
     df_context = calls_puts_side_by_side_distance_from_strike(
         df_context,
         flip_strikes,
         trim_around_strike,
         bar_scaling_mode
     )
-    # Now calculate stats on the (potentially trimmed) dataframe
-    df_context.get_total_stats()
+    # get_total_stats() is called inside calls_puts_side_by_side_distance_from_strike
 
     df_context.color_change_values()
 

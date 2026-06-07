@@ -379,3 +379,51 @@ class TestCsvNumericTypes:
             "comma-formatted numbers are not being cleaned up."
         )
         assert df["Open Interest"].sum() == 3000.0
+
+
+# --- Bar scaling mode smoke tests ---
+
+class TestBarScalingModes:
+    """Smoke tests: each mode renders without crashing and distinct modes differ."""
+
+    STRIKES = [90, 95, 100, 105, 110]
+    # Asymmetric OI so modes with different denominators produce visually distinct output
+    CALL_OI = [100, 500, 3000, 800, 200]
+    PUT_OI  = [150, 400, 2500, 900, 100]
+
+    def _ctx(self, mode):
+        ctx = OptionContext(
+            make_chain(self.STRIKES, self.CALL_OI, self.PUT_OI),
+            "TEST", 102.0,
+        )
+        return calls_puts_side_by_side_distance_from_strike(ctx, bar_scaling_mode=mode)
+
+    def test_mode1_groups_does_not_crash(self):
+        # Previously crashed with AttributeError — get_total_stats() was called too late
+        ctx = self._ctx("Relative to OTM/ITM/ATM Groups")
+        assert "background" in ctx.styled_df.to_html()
+
+    def test_mode2_per_strike_does_not_crash(self):
+        ctx = self._ctx("Per Strike (Row)")
+        assert ctx.styled_df is not None
+
+    def test_mode3_full_chain_does_not_crash(self):
+        ctx = self._ctx("Relative to Full Chain")
+        assert "background" in ctx.styled_df.to_html()
+
+    def test_mode4_per_side_does_not_crash(self):
+        ctx = self._ctx("Per Side (Each side's own peak)")
+        assert "background" in ctx.styled_df.to_html()
+
+    def test_mode1_and_mode3_produce_different_output(self):
+        # Different denominators → different bar widths → different HTML
+        html1 = self._ctx("Relative to OTM/ITM/ATM Groups").styled_df.to_html()
+        html3 = self._ctx("Relative to Full Chain").styled_df.to_html()
+        assert html1 != html3
+
+    def test_mode3_and_mode4_differ_when_call_put_peaks_differ(self):
+        # Call peak (3000) >> put peak (2500): Mode 3 uses 3000 for both sides,
+        # Mode 4 uses 3000 for calls and 2500 for puts → puts bars differ
+        html3 = self._ctx("Relative to Full Chain").styled_df.to_html()
+        html4 = self._ctx("Per Side (Each side's own peak)").styled_df.to_html()
+        assert html3 != html4

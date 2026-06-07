@@ -61,8 +61,8 @@ with st.sidebar:
     st.subheader("Visualization")
     bar_scaling_mode = st.radio(
         "Proportional Bar Scaling",
-        ["Relative to OTM/ITM/ATM Groups", "Per Strike (Row)", "Relative to Full Chain"],
-        help="Mode 1: Normalize bars relative to their specific group peak (OTM, ITM, or ATM). Mode 2: Relative to row total. Mode 3: Relative to the single largest peak in the entire chain."
+        ["Relative to OTM/ITM/ATM Groups", "Per Strike (Row)", "Relative to Full Chain", "Per Side (Each side's own peak)"],
+        help="Mode 1: Each moneyness group (OTM/ATM/ITM) normalized to its own peak. Mode 2: Calls vs puts relative to row total. Mode 3: Global bell curve — single peak is 100%, all others scale down. Mode 4: Each side (calls/puts) normalized independently to its own peak."
     )
 
 @st.cache_data(show_spinner=False)

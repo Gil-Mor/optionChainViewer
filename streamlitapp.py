@@ -61,14 +61,16 @@ if st.session_state['ticker'] != st.session_state['last_ticker']:
     st.session_state['name_query'] = ''
     st.session_state['company_name_display'] = ''
 
-with st.sidebar:
-    st.header("Settings")
-    st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
+# Ticker and Name search in the main page area
+st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
+search_col1, search_col2 = st.columns([1, 2])
+
+with search_col1:
     ticker = st.text_input(label="Search by Ticker", placeholder="NVDA", key='ticker')
-
     if st.session_state['company_name_display']:
-        st.caption(st.session_state['company_name_display'])
+        st.caption(f"**{st.session_state['company_name_display']}**")
 
+with search_col2:
     name_query = st.text_input("Search by Company / Security Name", placeholder="e.g. Nvidia", key='name_query')
     if st.button("Search"):
         if name_query.strip():
@@ -82,9 +84,12 @@ with st.sidebar:
             else:
                 st.warning(f"No ticker found for '{name_query}'.")
 
+with st.sidebar:
+    st.header("Chain Configuration")
     available_dates = get_available_dates(ticker)
     if not available_dates:
-        st.error(f"No options data found for ticker: {ticker}")
+        if ticker:
+            st.error(f"No options data found for ticker: {ticker}")
         st.stop()
 
     exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, help="Select an expiration date to view its option chain.")
@@ -160,11 +165,9 @@ if price_change is not None and price_pct_change is not None:
 
 st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1.2em;'>{price_display}</span><span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'> | daily change: {price_change_display}</span>", unsafe_allow_html=True)
 
-# st.markdown(f"<span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'>{price_change_display}</span>", unsafe_allow_html=True)
-
 st.write(f"Expiration Date: {res['expiration_date']}")
 if not is_market_open():
-    st.info("🌙 US Markets are currently closed. Data may remain from the last close or be missing.")
+    st.info("🌙 US Markets are currently closed. Intraday data may remain from the last close or be missing. Open Interest should be available.")
 
 df = res['styled_dataframe']
 

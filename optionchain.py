@@ -1,6 +1,7 @@
 import math
 import pandas as pd
 from pandas.io.formats.style import Styler
+from datetime import datetime
 import yfinanceGetOptions as yfi
 import yfinance
 
@@ -620,14 +621,15 @@ def main(
     flip_strikes: bool = False,
     trim_around_strike: int = 0,
     bar_scaling_mode: str = 'Per Strike (Row)',
-    company_name: str = None
+    company_name: str = None,
+    retrieval_time: datetime = None
 ):
     if df is not None:
         pass
     elif filepath:
         df = readcsv(filepath)
     else:
-        df, expiration_date, available_expiration_dates = yfi.get_options_chain_table(ticker, expiration_date)
+        df, expiration_date, available_expiration_dates, retrieval_time = yfi.get_options_chain_table(ticker, expiration_date)
 
     if df is None or df.empty:
         return None
@@ -661,5 +663,6 @@ def main(
         "context": df_context,
         "sentiment_summary_styler": df_context.get_sentiment_summary_styler(),
         "technical_breakdown": df_context.get_technical_breakdown(),
-        "company_name": company_name
+        "company_name": company_name,
+        "retrieval_time": retrieval_time
     }

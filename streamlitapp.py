@@ -113,7 +113,7 @@ with st.sidebar:
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
     import yfinanceGetOptions as yfi_module
-    df, target_exp, all_exps = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
+    df, target_exp, all_exps, retrieval_time = yfi_module.get_options_chain_table(ticker_symbol, selected_exp)
 
     ticker_obj = yf.Ticker(ticker_symbol)
     info = ticker_obj.info
@@ -128,10 +128,10 @@ def get_cached_options_data(ticker_symbol, selected_exp):
         change = price - prev_close
         percent_change = (change / prev_close) * 100
 
-    return df, target_exp, all_exps, price, change, percent_change, name
+    return df, target_exp, all_exps, price, change, percent_change, name, retrieval_time
 
 with st.spinner(f"Loading {ticker} data..."):
-    raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name = get_cached_options_data(ticker, exp_date)
+    raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name, retrieval_time = get_cached_options_data(ticker, exp_date)
 st.session_state['company_name_display'] = company_name or ''
 st.session_state['last_ticker'] = ticker
 
@@ -143,7 +143,8 @@ res = optionchain.main(ticker,
     flip_strikes=flip_strikes,
     trim_around_strike=trim_around_strike,
     bar_scaling_mode=bar_scaling_mode,
-    company_name=company_name)
+    company_name=company_name,
+    retrieval_time=retrieval_time)
 
 if res is None:
     st.error(f"Failed to retrieve data for {ticker}. The symbol might be invalid or the API is currently unavailable.")
@@ -166,6 +167,10 @@ if price_change is not None and price_pct_change is not None:
 st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1.2em;'>{price_display}</span><span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'> | daily change: {price_change_display}</span>", unsafe_allow_html=True)
 
 st.write(f"Expiration Date: {res['expiration_date']}")
+if res.get('retrieval_time'):
+    st.caption(f"Data from: {res['retrieval_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+else:
+    st.caption("No time data available.")
 if not is_market_open():
     st.info("🌙 US Markets are currently closed. Intraday data may remain from the last close or be missing. Open Interest should be available.")
 

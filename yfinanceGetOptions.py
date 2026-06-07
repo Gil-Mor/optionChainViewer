@@ -1,10 +1,11 @@
 import yfinance as yf
 import pandas as pd
+from datetime import datetime
 
 
 def get_options_chain_table(symbol: str,
     expiration_date=None,
-    keep_only_common_strikes: bool = True) -> tuple[pd.DataFrame, str]:
+    keep_only_common_strikes: bool = True) -> tuple[pd.DataFrame, str, list, datetime]:
     """
     Get options chain in a formatted table with calls on left, puts on right
 
@@ -14,7 +15,7 @@ def get_options_chain_table(symbol: str,
                                        If None, uses nearest expiration
 
     Returns:
-        pandas.DataFrame: Formatted options chain table
+        tuple: (pandas.DataFrame, target_exp, exp_dates, retrieval_time)
     """
 
     try:
@@ -25,14 +26,14 @@ def get_options_chain_table(symbol: str,
         exp_dates = ticker.options
         if not exp_dates:
             print(f"No options data available for {symbol}")
-            return pd.DataFrame(), "", []
+            return pd.DataFrame(), "", [], None
 
         # Use specified date or nearest expiration
         if expiration_date:
             if expiration_date not in exp_dates:
                 print(f"Expiration date {expiration_date} not available.")
                 print(f"Available dates: {list(exp_dates)}")
-                return pd.DataFrame(), "", []
+                return pd.DataFrame(), "", [], None
             target_exp = expiration_date
         else:
             target_exp = exp_dates[0]  # Nearest expiration
@@ -43,6 +44,12 @@ def get_options_chain_table(symbol: str,
         options_chain = ticker.option_chain(target_exp)
         calls = options_chain.calls
         puts = options_chain.puts
+
+        # Extract retrieval time from metadata if available, else use None
+        retrieval_time = None
+        underlying_info = getattr(options_chain, 'underlying', {})
+        if underlying_info and 'regularMarketTime' in underlying_info:
+            retrieval_time = datetime.fromtimestamp(underlying_info['regularMarketTime'])
 
         # yfinance already provides change and percentChange columns
         # Just clean up any NaN values
@@ -98,11 +105,11 @@ def get_options_chain_table(symbol: str,
         # Fill NaN values with 0 and format numbers
         result = result.fillna(0)
 
-        return result, target_exp, exp_dates
+        return result, target_exp, exp_dates, retrieval_time
 
     except Exception as e:
         print(f"Error getting options data: {e}")
-        return pd.DataFrame(), "", []
+        return pd.DataFrame(), "", [], None
 
 def get_ticker_from_name(name: str) -> str | None:
     """Return the best-match ticker symbol for a company/security name."""
@@ -117,5 +124,5 @@ def get_ticker_from_name(name: str) -> str | None:
 
 if __name__ == "__main__":
     symbol = "AAPL"
-    df, target_exp, exp_dates = get_options_chain_table(symbol)
+    df, target_exp, exp_dates, retrieval_time = get_options_chain_table(symbol)
     print(df.head())

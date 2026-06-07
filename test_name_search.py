@@ -156,8 +156,9 @@ class TestPendingTickerStateMachine:
             state["ticker"] = state["pending_ticker"]
             state["pending_ticker"] = None
 
-    def _state(self, ticker="NVDA", pending=None, display=""):
-        return {"ticker": ticker, "pending_ticker": pending, "company_name_display": display}
+    def _state(self, ticker="NVDA", pending=None, display="", last_ticker="", name_query=""):
+        return {"ticker": ticker, "pending_ticker": pending, "company_name_display": display,
+                "last_ticker": last_ticker, "name_query": name_query}
 
     # --- core transitions ---
 
@@ -236,6 +237,43 @@ class TestPendingTickerStateMachine:
         assert s["pending_ticker"] == "TSLA"  # new value queued
         self._apply_pending(s)
         assert s["ticker"] == "TSLA"       # updated after apply
+
+    def _apply_ticker_change_clear(self, state: dict):
+        """Simulate the ticker-change detection block in streamlitapp.py."""
+        if state["ticker"] != state["last_ticker"]:
+            state["name_query"] = ""
+            state["company_name_display"] = ""
+
+    def test_ticker_change_clears_name_field(self):
+        """Typing a new ticker must wipe the name field so a stale name can't
+        re-trigger a name search on the next Search click."""
+        s = self._state(ticker="AAPL", last_ticker="NVDA", name_query="Microsoft")
+        self._apply_ticker_change_clear(s)
+        assert s["name_query"] == ""
+
+    def test_ticker_change_clears_stale_company_caption(self):
+        s = self._state(ticker="AAPL", last_ticker="NVDA", display="NVIDIA Corporation")
+        self._apply_ticker_change_clear(s)
+        assert s["company_name_display"] == ""
+
+    def test_no_ticker_change_preserves_name_and_display(self):
+        s = self._state(ticker="NVDA", last_ticker="NVDA",
+                        name_query="Some partial text", display="NVIDIA Corporation")
+        self._apply_ticker_change_clear(s)
+        assert s["name_query"] == "Some partial text"
+        assert s["company_name_display"] == "NVIDIA Corporation"
+
+    def test_name_search_resolution_also_triggers_clear(self):
+        """Name search resolves NVDA→MSFT via pending_ticker.  After the pending
+        is applied, ticker differs from last_ticker, so name_query is cleared."""
+        s = self._state(ticker="NVDA", last_ticker="NVDA",
+                        pending="MSFT", name_query="Microsoft")
+        # step 1: apply pending (simulates pre-sidebar block)
+        self._apply_pending(s)
+        assert s["ticker"] == "MSFT"
+        # step 2: ticker-change detection clears name field
+        self._apply_ticker_change_clear(s)
+        assert s["name_query"] == ""
 
     def test_empty_name_field_search_guard(self):
         """The Search handler skips the API call when the name input is blank.
@@ -368,6 +406,33 @@ class TestStreamlitNameSearchUI:
         # After the full rerun with MSFT as ticker, display shows the new company name
         assert at.session_state["ticker"] == "MSFT"
         assert at.session_state["company_name_display"] == "Microsoft Corporation"
+
+    def test_ticker_change_clears_stale_name_field(self):
+        """Regression: after a name search populates the ticker, typing a new ticker
+        directly must clear the name field.  Without the fix the stale name would
+        re-fire a name search on the next Search click, overriding the typed ticker."""
+        mock_nvda = _make_mock_ticker(long_name="NVIDIA Corporation")
+        mock_aapl = _make_mock_ticker(long_name="Apple Inc.")
+
+        def ticker_side_effect(symbol):
+            return mock_aapl if symbol == "AAPL" else mock_nvda
+
+        with (
+            patch("yfinance.Ticker", side_effect=ticker_side_effect),
+            patch("yfinanceGetOptions.yf.Ticker", side_effect=ticker_side_effect),
+            patch("yfinanceGetOptions.get_ticker_from_name", return_value="MSFT"),
+            patch("optionchain.main", return_value=_minimal_main_result()),
+        ):
+            at = AppTest.from_file("streamlitapp.py", default_timeout=15)
+            at.run()
+            # Simulate: user typed "Microsoft" in name field (stale from a prior search)
+            at.text_input[1].set_value("Microsoft")
+            # Now user changes ticker directly to AAPL
+            at.text_input[0].set_value("AAPL").run()
+
+        # Name field must be cleared — it must NOT still hold "Microsoft"
+        assert at.session_state["name_query"] == ""
+        assert at.session_state["ticker"] == "AAPL"
 
     def test_no_options_data_for_ticker_shows_error(self):
         """If yfinance returns no expiration dates, the app shows an error."""

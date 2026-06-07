@@ -44,6 +44,10 @@ if 'pending_ticker' not in st.session_state:
     st.session_state['pending_ticker'] = None
 if 'company_name_display' not in st.session_state:
     st.session_state['company_name_display'] = ''
+if 'name_query' not in st.session_state:
+    st.session_state['name_query'] = ''
+if 'last_ticker' not in st.session_state:
+    st.session_state['last_ticker'] = ''
 
 # Apply pending ticker BEFORE the ticker widget renders (Streamlit forbids
 # writing to a widget's session_state key after the widget is instantiated)
@@ -51,31 +55,22 @@ if st.session_state['pending_ticker']:
     st.session_state['ticker'] = st.session_state['pending_ticker']
     st.session_state['pending_ticker'] = None
 
+# When the ticker changes (typed directly or resolved from a name search),
+# clear the name field and stale company caption so they don't mislead.
+if st.session_state['ticker'] != st.session_state['last_ticker']:
+    st.session_state['name_query'] = ''
+    st.session_state['company_name_display'] = ''
+
 with st.sidebar:
     st.header("Settings")
     st.write(f"Ticker ideas: {', '.join(popular_tickers)}")
-    ticker = st.text_input(label="Ticker", placeholder="NVDA", key='ticker')
+    ticker = st.text_input(label="Search by Ticker", placeholder="NVDA", key='ticker')
 
     if st.session_state['company_name_display']:
         st.caption(st.session_state['company_name_display'])
 
-    st.write("— search by name —")
-
-    # Inject CSS to hide the "Press Enter to submit form" helper text
-    st.markdown(
-        """
-        <style>
-        [data-testid="InputInstructions"] {
-            visibility: hidden;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    with st.form("name_search"):
-        name_query = st.text_input("Company / Security Name", placeholder="e.g. Nvidia")
-        search_submitted = st.form_submit_button("Search")
-    if search_submitted:
+    name_query = st.text_input("Search by Company / Security Name", placeholder="e.g. Nvidia", key='name_query')
+    if st.button("Search"):
         if name_query.strip():
             with st.spinner("Looking up ticker..."):
                 import yfinanceGetOptions as yfi_module
@@ -133,6 +128,7 @@ def get_cached_options_data(ticker_symbol, selected_exp):
 with st.spinner(f"Loading {ticker} data..."):
     raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name = get_cached_options_data(ticker, exp_date)
 st.session_state['company_name_display'] = company_name or ''
+st.session_state['last_ticker'] = ticker
 
 res = optionchain.main(ticker,
     df=raw_df,

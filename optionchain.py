@@ -5,7 +5,7 @@ import yfinanceGetOptions as yfi
 import yfinance
 
 def readcsv(file_path: str) -> pd.DataFrame:
-    df = pd.read_csv(file_path, delimiter="\t")
+    df = pd.read_csv(file_path, delimiter="\t", thousands=",")
     return df
 
 

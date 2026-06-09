@@ -8,7 +8,7 @@ st.set_page_config(
     page_title="Option Chain Viewer",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 st.title("Option Chain Viewer")
 st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
@@ -190,4 +190,5 @@ if 'technical_breakdown' in res:
     st.write("---")
     st.subheader("Technical Breakdown")
     st.table(res['technical_breakdown'])
-    st.caption("Disclaimer!!!: These observations are based on heuristic rules and do not constitute financial advice.")
+    st.caption("⚠️ Note: These observations are based on heuristic rules and do not constitute financial advice. E.g. a position could be a directional bet **OR position hedging**")
+    st.caption("No LLMs were harmed during this analysis")

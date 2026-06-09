@@ -337,24 +337,70 @@ class TestStreamlitNameSearchUI:
         with _patched_app(main_result=_minimal_main_result(company_name="NVIDIA Corporation")) as at:
             assert at.session_state["company_name_display"] == "NVIDIA Corporation"
 
-    def test_empty_name_field_does_not_trigger_search(self):
-        """Submitting the form with a blank name must not change the ticker."""
+    def test_empty_ticker_field_does_not_clear_ticker(self):
+        """Clearing the ticker field must not set ticker to '' or break the app."""
         with _patched_app() as at:
             original = at.session_state["ticker"]
-            at.text_input[1].set_value("")
-            at.button[0].click().run()
+            at.text_input[0].set_value("").run()
             assert at.session_state["ticker"] == original
-            assert not at.session_state["pending_ticker"]
+            assert at.session_state["ticker_ready"] is True
+
+    def test_clearing_ticker_after_failed_search_restores_ticker_ready(self):
+        """After an invalid ticker (ticker_ready=False), clearing the field restores ticker_ready."""
+        mock_ticker = _make_mock_ticker()
+
+        def ticker_side_effect(symbol):
+            if symbol == "NOTREAL":
+                raise Exception("unknown symbol")
+            return mock_ticker
+
+        with (
+            patch("yfinance.Ticker", side_effect=ticker_side_effect),
+            patch("yfinanceGetOptions.yf.Ticker", side_effect=ticker_side_effect),
+            patch("optionchain.main", return_value=_minimal_main_result()),
+        ):
+            at = AppTest.from_file("streamlitapp.py", default_timeout=15)
+            at.run()
+            at.text_input[0].set_value("NOTREAL").run()
+            assert at.session_state["ticker_ready"] is False
+            at.text_input[0].set_value("").run()
+        assert at.session_state["ticker_ready"] is True
+        assert at.session_state["ticker"] == "NVDA"
+
+    def test_empty_name_field_does_not_trigger_search(self):
+        """Clearing the name field must not change the ticker."""
+        with _patched_app() as at:
+            original = at.session_state["ticker"]
+            at.text_input[1].set_value("").run()
+            assert at.session_state["ticker"] == original
+
+    def test_clearing_name_after_failed_search_restores_ticker_ready(self):
+        """After a failed name search (ticker_ready=False), clearing the name field
+        must restore ticker_ready=True so the options chain loads for the current ticker."""
+        with (
+            patch("yfinance.Ticker", return_value=_make_mock_ticker()),
+            patch("yfinanceGetOptions.yf.Ticker", return_value=_make_mock_ticker()),
+            patch("yfinanceGetOptions.get_ticker_from_name", return_value=None),
+            patch("optionchain.main", return_value=_minimal_main_result()),
+        ):
+            at = AppTest.from_file("streamlitapp.py", default_timeout=15)
+            at.run()
+            # Failed name search → ticker_ready becomes False
+            at.text_input[1].set_value("xyzzy").run()
+            assert at.session_state["ticker_ready"] is False
+            # Clearing the name field should restore ticker_ready
+            at.text_input[1].set_value("").run()
+        assert at.session_state["ticker_ready"] is True
+        assert at.session_state["ticker"] == "NVDA"
 
     def test_whitespace_only_name_does_not_trigger_search(self):
         with _patched_app() as at:
             original = at.session_state["ticker"]
-            at.text_input[1].set_value("   ")
-            at.button[0].click().run()
+            at.text_input[1].set_value("   ").run()
             assert at.session_state["ticker"] == original
 
     def test_name_found_updates_ticker(self):
-        """Successful name search: ticker is MSFT after the rerun triggered by st.rerun()."""
+        """Successful name search: typing a name and submitting updates the ticker."""
         with (
             patch("yfinance.Ticker", return_value=_make_mock_ticker()),
             patch("yfinanceGetOptions.yf.Ticker", return_value=_make_mock_ticker()),
@@ -363,8 +409,7 @@ class TestStreamlitNameSearchUI:
         ):
             at = AppTest.from_file("streamlitapp.py", default_timeout=15)
             at.run()
-            at.text_input[1].set_value("Microsoft")
-            at.button[0].click().run()
+            at.text_input[1].set_value("Microsoft").run()
         assert at.session_state["ticker"] == "MSFT"
 
     def test_name_not_found_shows_warning_and_keeps_ticker(self):
@@ -378,8 +423,7 @@ class TestStreamlitNameSearchUI:
             at = AppTest.from_file("streamlitapp.py", default_timeout=15)
             at.run()
             original = at.session_state["ticker"]
-            at.text_input[1].set_value("xyzzy corp that does not exist")
-            at.button[0].click().run()
+            at.text_input[1].set_value("xyzzy corp that does not exist").run()
         assert at.session_state["ticker"] == original
         assert len(at.warning) > 0
 
@@ -401,21 +445,26 @@ class TestStreamlitNameSearchUI:
             at = AppTest.from_file("streamlitapp.py", default_timeout=15)
             at.run()
             assert at.session_state["company_name_display"] == "NVIDIA Corporation"
-            at.text_input[1].set_value("Microsoft")
-            at.button[0].click().run()
+            at.text_input[1].set_value("Microsoft").run()
         # After the full rerun with MSFT as ticker, display shows the new company name
         assert at.session_state["ticker"] == "MSFT"
         assert at.session_state["company_name_display"] == "Microsoft Corporation"
 
-    def test_ticker_change_clears_stale_name_field(self):
-        """Regression: after a name search populates the ticker, typing a new ticker
-        directly must clear the name field.  Without the fix the stale name would
-        re-fire a name search on the next Search click, overriding the typed ticker."""
+    def test_ticker_change_after_name_search_syncs_correctly(self):
+        """In real Streamlit each text_input on_change fires its own rerun (blur/Enter
+        triggers an immediate rerun before the user can interact with another field).
+        This test mirrors that: name search fires first (own run), then ticker change
+        fires (own run).  The final state should reflect the ticker change."""
         mock_nvda = _make_mock_ticker(long_name="NVIDIA Corporation")
         mock_aapl = _make_mock_ticker(long_name="Apple Inc.")
+        mock_msft = _make_mock_ticker(long_name="Microsoft Corporation")
 
         def ticker_side_effect(symbol):
-            return mock_aapl if symbol == "AAPL" else mock_nvda
+            if symbol == "AAPL":
+                return mock_aapl
+            if symbol == "MSFT":
+                return mock_msft
+            return mock_nvda
 
         with (
             patch("yfinance.Ticker", side_effect=ticker_side_effect),
@@ -425,17 +474,18 @@ class TestStreamlitNameSearchUI:
         ):
             at = AppTest.from_file("streamlitapp.py", default_timeout=15)
             at.run()
-            # Simulate: user typed "Microsoft" in name field (stale from a prior search)
-            at.text_input[1].set_value("Microsoft")
-            # Now user changes ticker directly to AAPL
+            # Run 1: user submits name field → ticker resolves to MSFT
+            at.text_input[1].set_value("Microsoft").run()
+            assert at.session_state["ticker"] == "MSFT"
+            # Run 2: user then changes ticker directly to AAPL
             at.text_input[0].set_value("AAPL").run()
 
-        # Name field must be cleared — it must NOT still hold "Microsoft"
-        assert at.session_state["name_query"] == ""
+        # Name field syncs to the new ticker's canonical name
         assert at.session_state["ticker"] == "AAPL"
+        assert at.session_state["name_query"] == "Apple Inc."
 
-    def test_no_options_data_for_ticker_shows_error(self):
-        """If yfinance returns no expiration dates, the app shows an error."""
+    def test_no_options_data_for_ticker_shows_warning(self):
+        """If yfinance returns no expiration dates, the app shows a warning."""
         empty_ticker = _make_mock_ticker(options=())
         with _patched_app(ticker_mock=empty_ticker) as at:
-            assert len(at.error) > 0
+            assert len(at.warning) > 0

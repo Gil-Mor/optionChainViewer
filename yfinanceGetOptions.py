@@ -2,6 +2,19 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
+def search_ticker(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+    except:
+        return None
+    return ticker
+
+def get_name_from_ticker(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+        return ticker.info.get('longName')
+    except:
+        return None
 
 def get_options_chain_table(symbol: str,
     expiration_date=None,

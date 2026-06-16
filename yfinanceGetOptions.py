@@ -71,17 +71,17 @@ def get_options_chain_table(symbol: str,
 
         # Aggregate by strike to handle cases where multiple contracts exist for the same strike.
         # This prevents Cartesian product inflation during the merge.
-        agg_map = {'lastPrice': 'mean', 'change': 'mean', 'percentChange': 'mean', 'volume': 'sum', 'openInterest': 'sum'}
+        agg_map = {'lastPrice': 'mean', 'change': 'mean', 'percentChange': 'mean', 'volume': 'sum', 'openInterest': 'sum', 'impliedVolatility': 'mean'}
         calls = calls.groupby('strike').agg(agg_map).reset_index()
         puts = puts.groupby('strike').agg(agg_map).reset_index()
 
         # Prepare calls data - use the actual change and percentChange columns
-        calls_formatted = calls[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].copy()
-        calls_formatted.columns = ['Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest', 'Strike']
+        calls_formatted = calls[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'impliedVolatility', 'strike']].copy()
+        calls_formatted.columns = ['Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest', 'Call_IV', 'Strike']
 
         # Prepare puts data - use the actual change and percentChange columns
-        puts_formatted = puts[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'strike']].rename(
-            columns={'lastPrice': 'Put_LastPrice', 'change': 'Put_Change', 'percentChange': 'Put_ChangePct', 'volume': 'Put_Volume', 'openInterest': 'Put_OpenInterest', 'strike': 'Put_Strike'})
+        puts_formatted = puts[['lastPrice', 'change', 'percentChange', 'volume', 'openInterest', 'impliedVolatility', 'strike']].rename(
+            columns={'lastPrice': 'Put_LastPrice', 'change': 'Put_Change', 'percentChange': 'Put_ChangePct', 'volume': 'Put_Volume', 'openInterest': 'Put_OpenInterest', 'impliedVolatility': 'Put_IV', 'strike': 'Put_Strike'})
 
         # Merge on strike price
         if keep_only_common_strikes:
@@ -100,9 +100,9 @@ def get_options_chain_table(symbol: str,
 
         # Reorder columns to match desired format
         final_columns = [
-            'Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest',
+            'Call_LastPrice', 'Call_Change', 'Call_ChangePct', 'Call_Volume', 'Call_OpenInterest', 'Call_IV',
             'Strike',
-            'Put_LastPrice', 'Put_Change', 'Put_ChangePct', 'Put_Volume', 'Put_OpenInterest'
+            'Put_LastPrice', 'Put_Change', 'Put_ChangePct', 'Put_Volume', 'Put_OpenInterest', 'Put_IV'
         ]
 
         # Select and reorder columns
@@ -110,9 +110,9 @@ def get_options_chain_table(symbol: str,
 
         # Clean column names for display
         result.columns = [
-            'Last Price', 'Change', '% Change', 'Volume', 'Open Interest',  # Calls
+            'Last Price', 'Change', '% Change', 'Volume', 'Open Interest', 'IV',  # Calls
             'Strike',
-            'Last Price.1', 'Change.1', '% Change.1', 'Volume.1', 'Open Interest.1'   # Puts
+            'Last Price.1', 'Change.1', '% Change.1', 'Volume.1', 'Open Interest.1', 'IV.1'   # Puts
         ]
 
         # Fill NaN values with 0 and format numbers

@@ -17,6 +17,11 @@ class OptionContext:
         current_price: float,
     ):
         self.df: pd.DataFrame = df
+        # Snapshot of the full, untrimmed/unflipped chain. Trimming drops far strikes and
+        # flipping breaks the call/put strike alignment per row, so anything that needs
+        # every strike's true Call/Put pairing (e.g. Max Pain) must read from this instead
+        # of self.df.
+        self.original_df: pd.DataFrame = df.copy()
         self.styled_df: Styler = df.style
         self.current_price = current_price
         self.ticker = ticker
@@ -36,6 +41,25 @@ class OptionContext:
 
     def get_puts_strike_col_index(self) -> int:
         return self.df.columns.get_loc(self.puts_strike_col_name)
+
+    def calculate_max_pain(self) -> float:
+        """Finds the strike at which total option holder payout is minimized.
+
+        Computed from original_df (the full, unflipped chain) since trimming would
+        ignore OI from dropped strikes, and flipping pairs calls/puts by distance
+        from ATM rather than by actual strike.
+        """
+        strikes = self.original_df["Strike"].tolist()
+        call_oi = self.original_df["Open Interest"].tolist()
+        put_oi = self.original_df["Open Interest.1"].tolist()
+
+        def total_payout(price: float) -> float:
+            call_payout = sum(max(0.0, price - k) * oi for k, oi in zip(strikes, call_oi))
+            put_payout = sum(max(0.0, k - price) * oi for k, oi in zip(strikes, put_oi))
+            return call_payout + put_payout
+
+        payouts = [total_payout(p) for p in strikes]
+        return float(strikes[payouts.index(min(payouts))])
 
     def get_total_stats(self) -> None:
         """Calculates OTM, ATM, and Total metrics for Calls and Puts."""
@@ -227,6 +251,21 @@ class OptionContext:
                 f"The Call Wall at {call_wall} acts as a ceiling where MMs are net sellers, creating heavy resistance. "
                 f"The Put Wall at {put_wall} acts as a floor where institutions have bought protection. "
                 "Price often 'pins' or bounces between these two levels as expiration approaches."
+            )
+        })
+
+        # Rule 5: Max Pain
+        max_pain = self.calculate_max_pain()
+        distance_pct = ((self.current_price - max_pain) / max_pain * 100) if max_pain else 0.0
+
+        breakdown.append({
+            "Aspect": "Max Pain",
+            "Status": f"${max_pain:,.2f} ({distance_pct:+.1f}% from current price)",
+            "Logic": "Strike price minimizing total option payout across all calls and puts in the chain.",
+            "Market Implication (MMs/Institutions vs Retail)": (
+                f"MMs (typically net option sellers) benefit if price settles near ${max_pain:,.2f} at expiration, "
+                "since that minimizes what they owe option holders. Price often gravitates toward Max Pain as "
+                "expiration nears, though this effect weakens further out in time."
             )
         })
 
@@ -606,6 +645,11 @@ def calls_puts_side_by_side_distance_from_strike(
     df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
     df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode)
     df_context.styled_df = format_style(df_context.styled_df)
+    # IV is a fraction (e.g. 0.35); display as a percentage. Guarded since CSV-loaded
+    # chains (the filepath= path in main()) may not have IV columns at all.
+    iv_cols = [c for c in ('IV', 'IV.1') if c in df_context.df.columns]
+    if iv_cols:
+        df_context.styled_df = df_context.styled_df.format({c: '{:.1%}' for c in iv_cols}, subset=iv_cols)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
     return df_context

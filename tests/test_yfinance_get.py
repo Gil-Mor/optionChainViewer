@@ -14,7 +14,8 @@ def _make_chain_df(strikes=[100.0]):
         'change': [0.0] * len(strikes),
         'percentChange': [0.0] * len(strikes),
         'volume': [10] * len(strikes),
-        'openInterest': [100] * len(strikes)
+        'openInterest': [100] * len(strikes),
+        'impliedVolatility': [0.3] * len(strikes)
     })
 
 # --- Unit Tests ---

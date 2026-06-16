@@ -124,6 +124,37 @@ def get_options_chain_table(symbol: str,
         print(f"Error getting options data: {e}")
         return pd.DataFrame(), "", [], None
 
+def get_price_history(symbol: str, period: str = "1mo") -> pd.DataFrame:
+    """Fetch historical price data for charting.
+
+    Args:
+        symbol (str): Stock symbol (e.g. 'AAPL').
+        period (str): One of '1d', '5d', '1mo', '1y', 'max'.
+
+    Returns:
+        pandas.DataFrame: Indexed by datetime with OHLCV columns. Empty DataFrame on failure.
+    """
+    # This is a rough-picture sparkline, not a trading chart, so bias toward fewer points:
+    # dense intraday bars only for the short ranges where they stay cheap (~70-130 rows),
+    # then step down sharply for longer ranges to keep weight low (1y ~53 rows, max ~a
+    # few hundred rows even for decades-old tickers) instead of fetching daily bars
+    # all the way out.
+    interval_map = {
+        "1d": "5m",
+        "5d": "15m",
+        "1mo": "1d",
+        "1y": "1wk",
+        "max": "1mo",
+    }
+    interval = interval_map.get(period, "1d")
+    try:
+        history = yf.Ticker(symbol).history(period=period, interval=interval)
+        return history if history is not None else pd.DataFrame()
+    except Exception as e:
+        print(f"Error getting price history for '{symbol}': {e}")
+        return pd.DataFrame()
+
+
 def get_ticker_from_name(name: str) -> str | None:
     """Return the best-match ticker symbol for a company/security name."""
     try:

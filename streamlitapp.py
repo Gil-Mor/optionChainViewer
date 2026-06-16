@@ -58,7 +58,7 @@ st.session_state['name_query'] = yfi_module.get_name_from_ticker(st.session_stat
 st.session_state['company_name_display'] = st.session_state['name_query']
 
 # Ticker and Name search in the main page area
-search_col1, search_col2 = st.columns([1, 2])
+search_col1, price_chart_col = st.columns([1, 2], gap="medium")
 
 def use_ticker_or_name_query(widget_key: str):
     print(f"using input from: {widget_key}")
@@ -145,6 +145,7 @@ def get_cached_options_data(ticker_symbol, selected_exp):
 
     return df, target_exp, all_exps, price, change, percent_change, name, retrieval_time
 
+res = None
 if st.session_state['ticker_ready']:
     with st.spinner(f"Loading {st.session_state['ticker']} data..."):
         raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name, retrieval_time = get_cached_options_data(st.session_state['ticker'], exp_date)
@@ -207,3 +208,58 @@ if st.session_state['ticker_ready']:
             st.table(res['technical_breakdown'])
             st.caption("⚠️ Note: These observations are based on heuristic rules and do not constitute financial advice. E.g. a position could be a directional bet **OR position hedging**")
             st.caption("No LLMs were harmed during this analysis")
+
+PRICE_CHART_PERIODS = {
+    "1 Day": "1d",
+    "5 Days": "5d",
+    "1 Month": "1mo",
+    "1 Year": "1y",
+    "Max": "max",
+}
+
+if 'price_chart_period' not in st.session_state:
+    st.session_state['price_chart_period'] = "1 Day"
+
+@st.cache_data(show_spinner=False, ttl=300)
+def get_cached_price_history(ticker_symbol, period):
+    return yfi_module.get_price_history(ticker_symbol, period)
+
+with price_chart_col:
+    st.subheader("Price Chart")
+
+    # Read the period from session_state (set by the radio below) before the widget call,
+    # so the radio can be rendered after the chart while still driving this run's data.
+    period_label = st.session_state['price_chart_period']
+    hist_df = get_cached_price_history(st.session_state['ticker'], PRICE_CHART_PERIODS[period_label])
+
+    period_change = optionchain.get_period_change(hist_df)
+    if period_change is not None:
+        change, pct_change = period_change
+        if change > 0:
+            change_color = "green"
+        elif change < 0:
+            change_color = "red"
+        else:
+            change_color = "grey"
+        sign = "+" if change > 0 else "-" if change < 0 else ""
+        change_text = f"{sign}${abs(change):,.2f} ({pct_change:+.2f}%)" if change != 0 else "Unchanged"
+        st.markdown(
+            f"<span style='color: {change_color}; font-weight: bold;'>{period_label} change: {change_text}</span>",
+            unsafe_allow_html=True
+        )
+
+    key_levels = res['context'].get_key_price_levels() if res is not None else {}
+    strike_range = res['context'].get_strike_range() if res is not None else None
+    chart = optionchain.build_price_chart(hist_df, key_levels, strike_range)
+
+    if chart is not None:
+        st.altair_chart(chart, width='stretch')
+    else:
+        st.info("No price chart data available.")
+
+    _, radio_col = st.columns([1, 12])
+    with radio_col:
+        st.radio(
+            "Range", list(PRICE_CHART_PERIODS.keys()), horizontal=True, key="price_chart_period",
+            label_visibility="collapsed"
+        )

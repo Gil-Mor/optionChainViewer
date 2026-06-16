@@ -42,6 +42,37 @@ class OptionContext:
     def get_puts_strike_col_index(self) -> int:
         return self.df.columns.get_loc(self.puts_strike_col_name)
 
+    def get_key_price_levels(self) -> dict[str, float]:
+        """Returns key option-derived price levels (OI walls) for charting.
+
+        Just Resistance/Support: ATM Strike sits right on top of the price line itself, and
+        Max Pain often lands on the same strike as ATM (see calculate_max_pain) - both made
+        the chart's line labels overlap without adding information beyond the walls.
+
+        Computed from self.df (the displayed/trimmed chain) to match the "Institutional
+        Walls" rule in get_technical_breakdown() - both must agree on the same Resistance/
+        Support numbers. Deliberately NOT original_df: a deep-OTM strike with old, large
+        OI can win the full-chain max but isn't a meaningful near-term level, and showing
+        a different wall on the chart than in the TA table is just confusing.
+        """
+        max_call_idx = self.df["Open Interest"].idxmax()
+        max_put_idx = self.df["Open Interest.1"].idxmax()
+
+        return {
+            "Resistance (Call Wall)": float(self.df.loc[max_call_idx, self.calls_strike_col_name]),
+            "Support (Put Wall)": float(self.df.loc[max_put_idx, self.puts_strike_col_name]),
+        }
+
+    def get_strike_range(self) -> tuple[float, float]:
+        """Returns (min, max) strike currently displayed (after trim/flip).
+
+        Used to bound the price chart's axis to the strikes the user is actually looking
+        at, rather than letting far-OTM walls from the full chain (see get_key_price_levels)
+        stretch it out.
+        """
+        strikes = pd.concat([self.df[self.calls_strike_col_name], self.df[self.puts_strike_col_name]])
+        return float(strikes.min()), float(strikes.max())
+
     def calculate_max_pain(self) -> float:
         """Finds the strike at which total option holder payout is minimized.
 
@@ -719,6 +750,152 @@ def calls_puts_side_by_side_distance_from_strike(
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
     return df_context
+
+
+_KEY_LEVEL_COLORS = {
+    # Bright, high-contrast against the dark chart background, and a different hue family
+    # (amber/cyan) than the green/red price line so the two don't get confused.
+    "Resistance (Call Wall)": "#ffa726",
+    "Support (Put Wall)": "#29b6f6",
+}
+
+_PRICE_UP_COLOR = "#198754"
+_PRICE_DOWN_COLOR = "#dc3545"
+
+
+def build_price_chart(
+    history_df: pd.DataFrame,
+    key_levels: dict[str, float] | None = None,
+    strike_range: tuple[float, float] | None = None,
+):
+    """Builds an Altair chart of historical close price with horizontal reference lines.
+
+    Either input may be missing: history_df can be empty (no price data) and/or
+    key_levels can be empty (no option data). Returns None if there's nothing to plot.
+
+    The y-axis domain always covers the price series' own min/max for the selected period
+    (yfinance's OHLC history gives us the real trading range) PLUS every key_levels value,
+    so Resistance/Support are always visible rather than getting clipped off a tightly-zoomed
+    short-period chart. This is safe to do unconditionally because key_levels now comes from
+    the same trimmed/displayed chain as the "Institutional Walls" TA rule (see
+    get_key_price_levels), not the full chain - so it can no longer drag in a meaningless
+    far-OTM wall. strike_range is only a last-resort fallback when there's neither price data
+    nor key_levels to size the axis from.
+    """
+    import altair as alt
+
+    key_levels = {label: price for label, price in (key_levels or {}).items() if price}
+
+    layers = []
+    domain_candidates = []
+
+    price_df = None
+    if history_df is not None and not history_df.empty and "Close" in history_df.columns:
+        price_df = history_df.reset_index()
+        date_col = price_df.columns[0]  # 'Date' or 'Datetime' depending on the interval used
+        price_df = price_df.rename(columns={date_col: "Date"})
+        domain_candidates += [price_df["Close"].min(), price_df["Close"].max()]
+
+    if key_levels:
+        domain_candidates += list(key_levels.values())
+
+    if not domain_candidates and strike_range:
+        domain_candidates += [strike_range[0], strike_range[1]]
+
+    domain = None
+    if domain_candidates:
+        lo, hi = min(domain_candidates), max(domain_candidates)
+        pad = (hi - lo) * 0.08 or (hi * 0.05 if hi else 1.0)
+        domain = [max(lo - pad, 0), hi + pad]
+
+    if price_df is not None:
+        is_up = price_df["Close"].iloc[-1] >= price_df["Close"].iloc[0]
+        layers.append(
+            alt.Chart(price_df).mark_line(color=_PRICE_UP_COLOR if is_up else _PRICE_DOWN_COLOR, clip=True).encode(
+                x=alt.X("Date:T", title=None),
+                y=alt.Y("Close:Q", title="Price", scale=alt.Scale(domain=domain, zero=False)),
+                tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Close:Q", format=".2f", title="Close")],
+            )
+        )
+
+    if key_levels:
+        labels = list(key_levels.keys())
+        plot_prices = list(key_levels.values())
+
+        # Labels sit right next to their line, so when Resistance and Support are equal or
+        # nearly so they need real vertical room for the TEXT (not just a hairline gap
+        # between two dashed lines) or the two labels overlap each other. Nudge them apart
+        # by a chunk of the visible range; the tooltip/label text still reports the real,
+        # un-nudged price via a separate field.
+        if domain and len(plot_prices) == 2:
+            min_gap = (domain[1] - domain[0]) * 0.08
+            if abs(plot_prices[0] - plot_prices[1]) < min_gap:
+                mid = (plot_prices[0] + plot_prices[1]) / 2
+                direction = 1 if plot_prices[0] >= plot_prices[1] else -1
+                plot_prices[0] = mid + direction * (min_gap / 2)
+                plot_prices[1] = mid - direction * (min_gap / 2)
+
+        levels_df = pd.DataFrame({"Label": labels, "Price": plot_prices, "ActualPrice": list(key_levels.values())})
+        levels_df["Text"] = [f"{label}: ${price:,.2f}" for label, price in zip(labels, levels_df["ActualPrice"])]
+        color = alt.Color(
+            "Label:N",
+            scale=alt.Scale(domain=list(_KEY_LEVEL_COLORS.keys()), range=list(_KEY_LEVEL_COLORS.values())),
+            legend=None,
+        )
+        y = alt.Y("Price:Q", scale=alt.Scale(domain=domain, zero=False))
+
+        layers.append(
+            alt.Chart(levels_df).mark_rule(strokeDash=[4, 4], clip=True).encode(
+                y=y,
+                color=color,
+                tooltip=[alt.Tooltip("Label:N"), alt.Tooltip("ActualPrice:Q", format=".2f", title="Price")],
+            )
+        )
+
+        if price_df is not None:
+            # Anchor to the last date in the price series so the label sits right at the
+            # line's right end, hugging the chart's right edge, instead of a fixed pixel
+            # offset that wouldn't track the actual plot width.
+            levels_df = levels_df.assign(_AnchorDate=price_df["Date"].max())
+            text_x = alt.X("_AnchorDate:T")
+            text_align, text_dx = "right", -4
+        else:
+            text_x = alt.value(2)
+            text_align, text_dx = "left", 4
+
+        layers.append(
+            alt.Chart(levels_df).mark_text(
+                align=text_align, baseline="bottom", dx=text_dx, dy=-2, fontWeight="bold", clip=False
+            ).encode(
+                x=text_x,
+                y=y,
+                text="Text:N",
+                color=color,
+            )
+        )
+
+    if not layers:
+        return None
+
+    chart = layers[0] if len(layers) == 1 else alt.layer(*layers)
+    return chart.properties(height=350).interactive()
+
+
+def get_period_change(history_df: pd.DataFrame) -> tuple[float, float] | None:
+    """Returns (change, pct_change) between the first and last Close in history_df.
+
+    Compares the same two points build_price_chart uses to color the line, so the
+    displayed change figure and the line's red/green color never disagree. None if
+    there's no price data to compare.
+    """
+    if history_df is None or history_df.empty or "Close" not in history_df.columns:
+        return None
+    first_close = float(history_df["Close"].iloc[0])
+    last_close = float(history_df["Close"].iloc[-1])
+    if first_close == 0:
+        return None
+    change = last_close - first_close
+    return change, (change / first_close) * 100
 
 
 def main(

@@ -50,16 +50,21 @@ def _make_mock_ticker(options=FAKE_EXP_DATES, long_name="NVIDIA Corporation",
     chain.calls = _chain_df()
     chain.puts = _chain_df()
     mock.option_chain.return_value = chain
+    # Must be a real (picklable) DataFrame: st.cache_data pickles get_price_history()'s return value.
+    mock.history.return_value = pd.DataFrame()
     return mock
 
 
 def _minimal_main_result(company_name="NVIDIA Corporation", exp="2025-01-17"):
     """Minimal optionchain.main() return value to prevent rendering crashes."""
+    context = MagicMock()
+    context.get_key_price_levels.return_value = {}
+    context.get_strike_range.return_value = (0.0, 0.0)
     return {
         "company_name": company_name,
         "expiration_date": exp,
         "styled_dataframe": pd.DataFrame({"A": [1]}).style,
-        "context": MagicMock(),
+        "context": context,
     }
 
 

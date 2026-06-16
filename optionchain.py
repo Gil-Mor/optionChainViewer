@@ -290,6 +290,35 @@ class OptionContext:
             return f'background-color: rgba(255, 0, 0, {alpha})'
         self.styled_df = self.styled_df.map(color_gradient, subset=['% Change', '% Change.1'])
 
+    def color_iv_values(self) -> None:
+        """Heatmap the IV / IV.1 columns by relative dispersion within the displayed table."""
+        iv_cols = [c for c in ('IV', 'IV.1') if c in self.df.columns]
+        if not iv_cols:
+            return
+
+        combined = pd.concat([self.df[c] for c in iv_cols])
+        combined = combined[combined.apply(lambda v: pd.notna(v) and math.isfinite(v) and v > 0)]
+
+        if len(combined.unique()) < 2:
+            return  # No dispersion to show (empty, all-NaN, single value, all-identical).
+
+        lo = combined.quantile(0.05)
+        hi = combined.quantile(0.95)
+        if hi <= lo:
+            return
+
+        alpha_min, alpha_max = 0.10, 0.55
+
+        def color_gradient(val):
+            if pd.isna(val) or not math.isfinite(val) or val <= 0:
+                return None
+            clipped = min(max(val, lo), hi)
+            normalized = (clipped - lo) / (hi - lo)
+            alpha = normalized * (alpha_max - alpha_min) + alpha_min
+            return f'background-color: rgba(255, 165, 0, {alpha:.3f})'
+
+        self.styled_df = self.styled_df.map(color_gradient, subset=iv_cols)
+
 
 def flip_rows_around_strike(df, split_point=None):
     """
@@ -698,6 +727,7 @@ def main(
     # get_total_stats() is called inside calls_puts_side_by_side_distance_from_strike
 
     df_context.color_change_values()
+    df_context.color_iv_values()
 
     return {
         "styled_dataframe": df_context.styled_df,

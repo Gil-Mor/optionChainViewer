@@ -269,6 +269,43 @@ class OptionContext:
             )
         })
 
+        # Rule 6: OTM IV Skew (Put vs Call) - the "volatility smirk".
+        # Guarded: CSV-loaded chains (filepath= in main()) may not have IV columns.
+        if 'IV' in self.df.columns and 'IV.1' in self.df.columns:
+            otm_call_iv = self.otm_calls['IV'].mean() if not self.otm_calls.empty else float('nan')
+            otm_put_iv = self.otm_puts['IV.1'].mean() if not self.otm_puts.empty else float('nan')
+
+            if pd.notna(otm_call_iv) and pd.notna(otm_put_iv) and otm_call_iv > 0:
+                iv_skew_ratio = otm_put_iv / otm_call_iv
+
+                if iv_skew_ratio > 1.3:
+                    status = "Steep Put Skew (Crash Hedging)"
+                    rule_ref = "OTM Put IV / OTM Call IV > 1.3"
+                    mm_inst = "OTM puts are priced far richer than OTM calls. Institutions are paying a steep premium for downside protection; MMs are charging accordingly for tail risk."
+                elif iv_skew_ratio > 1.1:
+                    status = "Moderate Put Skew (Normal Equity Skew)"
+                    rule_ref = "1.1 < OTM Put IV / OTM Call IV <= 1.3"
+                    mm_inst = "Typical equity options skew - downside protection costs more than upside speculation. No unusual stress."
+                elif iv_skew_ratio >= 0.9:
+                    status = "Flat Skew (Symmetric Risk Pricing)"
+                    rule_ref = "0.9 <= OTM Put IV / OTM Call IV <= 1.1"
+                    mm_inst = "Calls and puts are priced almost identically. Market is pricing similar odds of a large move in either direction - often seen ahead of binary catalysts like earnings."
+                elif iv_skew_ratio >= 0.7:
+                    status = "Mild Call Skew (Unusual)"
+                    rule_ref = "0.7 <= OTM Put IV / OTM Call IV < 0.9"
+                    mm_inst = "OTM calls are pricier than OTM puts, which is unusual for equities. Suggests speculative upside demand (e.g. squeeze potential) outweighing hedging demand."
+                else:
+                    status = "Inverted Call Skew (Strong Melt-Up Bias)"
+                    rule_ref = "OTM Put IV / OTM Call IV < 0.7"
+                    mm_inst = "Heavily inverted skew. Aggressive call buying (often retail-driven) is bidding up OTM call IV well above puts - a classic 'lotto ticket'/gamma-squeeze setup."
+
+                breakdown.append({
+                    "Aspect": "IV Skew (OTM Put vs Call)",
+                    "Status": f"{status} (Ratio: {iv_skew_ratio:.2f})",
+                    "Logic": f"Rule: {rule_ref} (Avg OTM Call IV: {otm_call_iv:.1%}, Avg OTM Put IV: {otm_put_iv:.1%})",
+                    "Market Implication (MMs/Institutions vs Retail)": mm_inst
+                })
+
         return breakdown
 
     def color_change_values(self) -> None:

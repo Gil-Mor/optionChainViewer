@@ -15,7 +15,9 @@ def _make_chain_df(strikes=[100.0]):
         'percentChange': [0.0] * len(strikes),
         'volume': [10] * len(strikes),
         'openInterest': [100] * len(strikes),
-        'impliedVolatility': [0.3] * len(strikes)
+        'impliedVolatility': [0.3] * len(strikes),
+        'bid': [0.9] * len(strikes),
+        'ask': [1.1] * len(strikes)
     })
 
 # --- Unit Tests ---
@@ -81,12 +83,14 @@ class TestRetrievalTimeUI:
         mock_yf_ticker.return_value.info = {"longName": "Test Corp", "regularMarketPrice": 100.0}
         mock_yf_ticker.return_value.fast_info = {"last_price": 100.0, "previous_close": 99.0}
 
+        context = MagicMock()
+        context.dte = None
         mock_opt_main.return_value = {
             "company_name": "Test Corp",
             "expiration_date": "2025-01-17",
             "styled_dataframe": pd.DataFrame().style,
             "retrieval_time": ret_time,
-            "context": MagicMock()
+            "context": context
         }
 
     @patch("optionchain.main")

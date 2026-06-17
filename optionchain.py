@@ -15,6 +15,8 @@ class OptionContext:
         df: pd.DataFrame,
         ticker: str,
         current_price: float,
+        expiration_date: str = None,
+        realized_vol: float = None,
     ):
         self.df: pd.DataFrame = df
         # Snapshot of the full, untrimmed/unflipped chain. Trimming drops far strikes and
@@ -29,6 +31,21 @@ class OptionContext:
         self.puts_strike_col_name = "Strike"
         self.atm_strike = get_atm_strike_from_current_price(df, current_price)
         self.atm_strike_row = df[df['Strike'] == self.atm_strike].index[0]
+
+        # Days to expiration, used by calculate_implied_move(). None if expiration_date
+        # wasn't supplied (e.g. a CSV-loaded chain via main(filepath=...)) or fails to parse.
+        self.dte: int | None = None
+        if expiration_date:
+            try:
+                exp_date = datetime.strptime(expiration_date, '%Y-%m-%d').date()
+                self.dte = (exp_date - datetime.now().date()).days
+            except (ValueError, TypeError):
+                self.dte = None
+
+        # Trailing annualized realized volatility, used as an IV Rank/Percentile substitute
+        # (see yfinanceGetOptions.get_realized_volatility - true IVP needs daily IV history
+        # yfinance doesn't expose). None if not supplied or unavailable.
+        self.realized_vol: float | None = realized_vol
 
     def update_strike_row(self) -> None:
         self.atm_strike_row = self.df[self.df[self.calls_strike_col_name] == self.atm_strike].index[0]
@@ -91,6 +108,57 @@ class OptionContext:
 
         payouts = [total_payout(p) for p in strikes]
         return float(strikes[payouts.index(min(payouts))])
+
+    def _get_atm_iv(self) -> float | None:
+        """Average of call/put IV at the ATM strike, or whichever side is available.
+
+        Reads from self.df (the displayed table), consistent with how get_total_stats()
+        and the IV skew rule already scale against the displayed chain rather than
+        original_df. Returns None if IV columns are absent or the ATM row's IV is unusable.
+        """
+        if 'IV' not in self.df.columns or 'IV.1' not in self.df.columns:
+            return None
+
+        atm_row = self.df[self.df[self.calls_strike_col_name] == self.atm_strike]
+        if atm_row.empty:
+            return None
+
+        call_iv = atm_row['IV'].iloc[0]
+        put_iv = atm_row['IV.1'].iloc[0]
+        call_valid = pd.notna(call_iv) and math.isfinite(call_iv) and call_iv > 0
+        put_valid = pd.notna(put_iv) and math.isfinite(put_iv) and put_iv > 0
+
+        if call_valid and put_valid:
+            return (call_iv + put_iv) / 2
+        if call_valid:
+            return float(call_iv)
+        if put_valid:
+            return float(put_iv)
+        return None
+
+    def calculate_implied_move(self) -> dict | None:
+        """Market-implied price range by expiration, from ATM IV and days to expiration.
+
+        Standard approximation: expected_move_pct = ATM IV * sqrt(DTE / 365). Returns None
+        if DTE or ATM IV aren't available (e.g. CSV-loaded chain, or missing IV columns).
+        """
+        if self.dte is None or self.dte <= 0:
+            return None
+
+        atm_iv = self._get_atm_iv()
+        if atm_iv is None:
+            return None
+
+        move_pct = atm_iv * math.sqrt(self.dte / 365)
+        move_dollar = self.current_price * move_pct
+
+        return {
+            "atm_iv": atm_iv,
+            "move_pct": move_pct,
+            "move_dollar": move_dollar,
+            "low": self.current_price - move_dollar,
+            "high": self.current_price + move_dollar,
+        }
 
     def get_total_stats(self) -> None:
         """Calculates OTM, ATM, and Total metrics for Calls and Puts."""
@@ -336,6 +404,53 @@ class OptionContext:
                     "Logic": f"Rule: {rule_ref} (Avg OTM Call IV: {otm_call_iv:.1%}, Avg OTM Put IV: {otm_put_iv:.1%})",
                     "Market Implication (MMs/Institutions vs Retail)": mm_inst
                 })
+
+        # Rule 7: Implied Move - the market's own forecast range for price by expiration.
+        implied_move = self.calculate_implied_move()
+        if implied_move is not None:
+            breakdown.append({
+                "Aspect": "Implied Move (to Expiration)",
+                "Status": (
+                    f"±${implied_move['move_dollar']:,.2f} ({implied_move['move_pct']:.1%}) "
+                    f"→ ${implied_move['low']:,.2f} - ${implied_move['high']:,.2f}"
+                ),
+                "Logic": f"ATM IV ({implied_move['atm_iv']:.1%}) x sqrt(DTE/365), DTE = {self.dte} days",
+                "Market Implication (MMs/Institutions vs Retail)": (
+                    "This is roughly the market's own 1-standard-deviation (~68% probability) forecast "
+                    "for where price lands by expiration, priced in by options buyers and sellers. A move "
+                    "beyond this range by expiration would be a bigger surprise than current option prices expect."
+                )
+            })
+
+        # Rule 8: IV vs Realized Volatility - a substitute for IV Rank/Percentile, which
+        # would need daily IV history yfinance doesn't provide (see get_realized_volatility).
+        atm_iv = self._get_atm_iv()
+        if atm_iv is not None and self.realized_vol is not None and self.realized_vol > 0:
+            iv_rv_ratio = atm_iv / self.realized_vol
+
+            if iv_rv_ratio > 1.5:
+                status = "Richly Priced (Elevated IV Premium)"
+                mm_inst = "Options are pricing in much more movement than the stock has actually shown recently. Common ahead of known catalysts (earnings, FDA decisions) or amid speculative option buying - selling premium here is statistically favored for option writers, all else equal."
+            elif iv_rv_ratio > 1.15:
+                status = "Moderate IV Premium (Normal)"
+                mm_inst = "IV sits modestly above realized volatility - the normal/expected state, since options carry a built-in risk premium for sellers. Nothing unusual."
+            elif iv_rv_ratio >= 0.85:
+                status = "Fairly Priced"
+                mm_inst = "Implied and realized volatility are closely aligned. Options are priced about in line with the stock's recent actual movement."
+            else:
+                status = "Cheap Relative to Realized Vol"
+                mm_inst = "Unusual: the market is pricing in LESS movement than the stock has actually shown recently. Can happen right after a vol-crushing event (e.g. post-earnings) or in persistently low-IV names."
+
+            breakdown.append({
+                "Aspect": "IV vs Realized Vol (IVP Proxy)",
+                "Status": f"{status} (Ratio: {iv_rv_ratio:.2f})",
+                "Logic": (
+                    f"ATM IV: {atm_iv:.1%} vs {yfi.REALIZED_VOL_LOOKBACK_DAYS}-Day Realized Vol: {self.realized_vol:.1%}. "
+                    "True IV Rank/Percentile needs daily IV history yfinance doesn't expose; this compares "
+                    "current IV to the stock's own recent actual volatility instead."
+                ),
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
 
         return breakdown
 
@@ -764,6 +879,12 @@ def calls_puts_side_by_side_distance_from_strike(
     iv_cols = [c for c in ('IV', 'IV.1') if c in display_df.columns]
     if iv_cols:
         df_context.styled_df = df_context.styled_df.format({c: '{:.1%}' for c in iv_cols}, subset=iv_cols)
+    # Spread % is already on a 0-100 scale (not a 0-1 fraction like IV), and is NaN (not 0)
+    # for strikes with no real bid/ask quote - na_rep keeps those showing "-" instead of a
+    # misleading "0.0%" that would look like a perfectly tight market.
+    spread_cols = [c for c in ('Spread %', 'Spread %.1') if c in display_df.columns]
+    if spread_cols:
+        df_context.styled_df = df_context.styled_df.format({c: '{:.1f}%' for c in spread_cols}, subset=spread_cols, na_rep="-")
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
     return df_context
@@ -934,6 +1055,7 @@ def main(
     company_name: str = None,
     retrieval_time: datetime = None,
     hidden_columns: list[str] = None,
+    realized_vol: float = None,
 ):
     if df is not None:
         pass
@@ -954,7 +1076,10 @@ def main(
         if not company_name:
             company_name = info.get('longName')
 
-    df_context = OptionContext(df, ticker, current_price)
+    if realized_vol is None:
+        realized_vol = yfi.get_realized_volatility(ticker)
+
+    df_context = OptionContext(df, ticker, current_price, expiration_date=expiration_date, realized_vol=realized_vol)
 
     df_context = calls_puts_side_by_side_distance_from_strike(
         df_context,

@@ -60,6 +60,7 @@ def _minimal_main_result(company_name="NVIDIA Corporation", exp="2025-01-17"):
     context = MagicMock()
     context.get_key_price_levels.return_value = {}
     context.get_strike_range.return_value = (0.0, 0.0)
+    context.dte = None
     return {
         "company_name": company_name,
         "expiration_date": exp,

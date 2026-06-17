@@ -50,6 +50,10 @@ COLUMN_VISIBILITY_OPTIONS = [
     ("Volume", "Volume", True),
     ("Open Interest", "Open Interest", True),
     ("IV", "IV", True),
+    ("Bid", "Bid", False),
+    ("Ask", "Ask", False),
+    ("Spread %", "Spread %", True),
+    ("Breakeven", "Breakeven", False),
 ]
 
 popular_tickers = (
@@ -189,13 +193,19 @@ def get_cached_options_data(ticker_symbol, selected_exp):
         change = price - prev_close
         percent_change = (change / prev_close) * 100
 
-    return df, target_exp, all_exps, price, change, percent_change, name, retrieval_time
+    # Trailing realized volatility - substitute for IV Rank/Percentile (see
+    # optionchain.OptionContext / yfinanceGetOptions.get_realized_volatility). Fetched here
+    # so it's cached alongside the rest of this ticker/expiration's data instead of hitting
+    # yfinance again on every Streamlit rerun (e.g. toggling a sidebar control).
+    realized_vol = yfi_module.get_realized_volatility(ticker_symbol)
+
+    return df, target_exp, all_exps, price, change, percent_change, name, retrieval_time, realized_vol
 
 res = None
 current_price = None
 if st.session_state['ticker_ready']:
     with st.spinner(f"Loading {st.session_state['ticker']} data..."):
-        raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name, retrieval_time = get_cached_options_data(st.session_state['ticker'], exp_date)
+        raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name, retrieval_time, realized_vol = get_cached_options_data(st.session_state['ticker'], exp_date)
     st.session_state['company_name_display'] = company_name or ''
     st.session_state['last_ticker'] = st.session_state['ticker']
 
@@ -209,7 +219,8 @@ if st.session_state['ticker_ready']:
         bar_scaling_mode=bar_scaling_mode,
         company_name=company_name,
         retrieval_time=retrieval_time,
-        hidden_columns=hidden_columns)
+        hidden_columns=hidden_columns,
+        realized_vol=realized_vol)
 
     if res is None:
         st.warning(f"Failed to retrieve data for {st.session_state['ticker']}. The symbol might be invalid or the API is currently unavailable.")
@@ -230,7 +241,9 @@ if st.session_state['ticker_ready']:
 
         st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1.2em;'>{price_display}</span><span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'> | daily change: {price_change_display}</span>", unsafe_allow_html=True)
 
-        st.write(f"Expiration Date: {res['expiration_date']}")
+        dte = res['context'].dte
+        dte_suffix = f" ({dte} day{'s' if dte != 1 else ''} away)" if dte is not None and dte >= 0 else ""
+        st.write(f"Expiration Date: {res['expiration_date']}{dte_suffix}")
         if res.get('retrieval_time'):
             st.caption(f"Data from: {res['retrieval_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         else:

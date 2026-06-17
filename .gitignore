@@ -24,3 +24,5 @@ env/
 
 # Temp output
 tmp.png
+
+private/

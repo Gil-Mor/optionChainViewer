@@ -42,6 +42,16 @@ def format_relative_date(when: datetime) -> str:
         return target.strftime('%A')
     return target.strftime('%d.%m.%y')
 
+# (display label, underlying column name, default visible)
+COLUMN_VISIBILITY_OPTIONS = [
+    ("Last Price", "Last Price", False),
+    ("Change ($)", "Change", False),
+    ("% Change", "% Change", True),
+    ("Volume", "Volume", True),
+    ("Open Interest", "Open Interest", True),
+    ("IV", "IV", True),
+]
+
 popular_tickers = (
         'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'DOW'
     )
@@ -66,6 +76,8 @@ if 'last_ticker' not in st.session_state:
     st.session_state['last_ticker'] = ''
 if 'ticker_ready' not in st.session_state:
     st.session_state['ticker_ready'] = True
+if 'column_visibility' not in st.session_state:
+    st.session_state['column_visibility'] = {col: default for _, col, default in COLUMN_VISIBILITY_OPTIONS}
 
 st.session_state['ticker_query'] = st.session_state['ticker']
 st.session_state['name_query'] = yfi_module.get_name_from_ticker(st.session_state['ticker'])
@@ -138,6 +150,26 @@ with st.sidebar:
         help="Mode 1: Each moneyness group (OTM/ATM/ITM) normalized to its own peak. Mode 2: Calls vs puts relative to row total. Mode 3: Global bell curve — single peak is 100%, all others scale down. Mode 4: Each side (calls/puts) normalized independently to its own peak."
     )
 
+    with st.expander("Column Visibility", expanded=False):
+        with st.form("column_visibility_form"):
+            selected_visibility = {}
+            for label, col_name, _default in COLUMN_VISIBILITY_OPTIONS:
+                selected_visibility[col_name] = st.checkbox(
+                    label, value=st.session_state['column_visibility'][col_name]
+                )
+            if st.form_submit_button("Apply"):
+                st.session_state['column_visibility'] = selected_visibility
+
+# Columns whose underlying name (or its ".1" put counterpart) should be hidden from the
+# rendered chain table. Built from the form's last applied state, not the in-progress form
+# widgets, so toggling checkboxes without pressing Apply doesn't change anything yet.
+hidden_columns = [
+    name
+    for col_name, visible in st.session_state['column_visibility'].items()
+    if not visible
+    for name in (col_name, f"{col_name}.1")
+]
+
 @st.cache_data(show_spinner=False)
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
@@ -176,7 +208,8 @@ if st.session_state['ticker_ready']:
         trim_around_strike=trim_around_strike,
         bar_scaling_mode=bar_scaling_mode,
         company_name=company_name,
-        retrieval_time=retrieval_time)
+        retrieval_time=retrieval_time,
+        hidden_columns=hidden_columns)
 
     if res is None:
         st.warning(f"Failed to retrieve data for {st.session_state['ticker']}. The symbol might be invalid or the API is currently unavailable.")

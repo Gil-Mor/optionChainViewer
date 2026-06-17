@@ -356,11 +356,13 @@ class OptionContext:
             if val > 0:
                 return f'background-color: rgba(0, 200, 0, {alpha})'
             return f'background-color: rgba(255, 0, 0, {alpha})'
-        self.styled_df = self.styled_df.map(color_gradient, subset=['% Change', '% Change.1'])
+        change_cols = [c for c in ('% Change', '% Change.1') if c in self.styled_df.data.columns]
+        if change_cols:
+            self.styled_df = self.styled_df.map(color_gradient, subset=change_cols)
 
     def color_iv_values(self) -> None:
         """Heatmap the IV / IV.1 columns by relative dispersion within the displayed table."""
-        iv_cols = [c for c in ('IV', 'IV.1') if c in self.df.columns]
+        iv_cols = [c for c in ('IV', 'IV.1') if c in self.styled_df.data.columns]
         if not iv_cols:
             return
 
@@ -717,7 +719,8 @@ def calls_puts_side_by_side_distance_from_strike(
     df_context: OptionContext,
     flip_strikes: bool = False,
     trim_around_strike: int = 0,
-    bar_scaling_mode: str = 'Per Strike (Row)'
+    bar_scaling_mode: str = 'Per Strike (Row)',
+    hidden_columns: list[str] = None,
 ) -> OptionContext:
 
     df_context.df = trim_rows_symmetric_radius(df_context.df, pivot_row=df_context.atm_strike_row, rows_to_trim=trim_around_strike)
@@ -738,17 +741,27 @@ def calls_puts_side_by_side_distance_from_strike(
     # from the context, which are only available after get_total_stats() runs.
     df_context.get_total_stats()
 
-    df_context.styled_df = df_context.df.style
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
-    df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode)
+    # The displayed table only ever drops purely cosmetic columns here - df_context.df
+    # itself is left untouched so Max Pain, the sentiment summary, the technical
+    # breakdown, and the price chart's key levels (all of which read df_context.df
+    # directly, not styled_df) keep working regardless of what's hidden from view.
+    display_df = df_context.df
+    if hidden_columns:
+        cols_to_drop = [c for c in hidden_columns if c in display_df.columns]
+        if cols_to_drop:
+            display_df = display_df.drop(columns=cols_to_drop)
+
+    df_context.styled_df = display_df.style
+    df_context.styled_df = style_proportional_bars(display_df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
+    df_context.styled_df = style_proportional_bars(display_df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode)
     df_context.styled_df = format_style(df_context.styled_df)
     # Volume and Open Interest are share/contract counts; display as integers, no decimals.
-    int_cols = [c for c in ('Volume', 'Volume.1', 'Open Interest', 'Open Interest.1') if c in df_context.df.columns]
+    int_cols = [c for c in ('Volume', 'Volume.1', 'Open Interest', 'Open Interest.1') if c in display_df.columns]
     if int_cols:
         df_context.styled_df = df_context.styled_df.format({c: '{:,.0f}' for c in int_cols}, subset=int_cols)
     # IV is a fraction (e.g. 0.35); display as a percentage. Guarded since CSV-loaded
     # chains (the filepath= path in main()) may not have IV columns at all.
-    iv_cols = [c for c in ('IV', 'IV.1') if c in df_context.df.columns]
+    iv_cols = [c for c in ('IV', 'IV.1') if c in display_df.columns]
     if iv_cols:
         df_context.styled_df = df_context.styled_df.format({c: '{:.1%}' for c in iv_cols}, subset=iv_cols)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
@@ -919,7 +932,8 @@ def main(
     trim_around_strike: int = 0,
     bar_scaling_mode: str = 'Per Strike (Row)',
     company_name: str = None,
-    retrieval_time: datetime = None
+    retrieval_time: datetime = None,
+    hidden_columns: list[str] = None,
 ):
     if df is not None:
         pass
@@ -946,7 +960,8 @@ def main(
         df_context,
         flip_strikes,
         trim_around_strike,
-        bar_scaling_mode
+        bar_scaling_mode,
+        hidden_columns
     )
     # get_total_stats() is called inside calls_puts_side_by_side_distance_from_strike
 

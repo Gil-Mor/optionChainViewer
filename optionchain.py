@@ -814,8 +814,14 @@ def build_price_chart(
 
     if price_df is not None:
         is_up = price_df["Close"].iloc[-1] >= price_df["Close"].iloc[0]
+        # A line mark draws nothing for a single point (e.g. "1 Day" right after the
+        # market opens, when only one 5-minute bar exists yet) - add point markers so
+        # there's still something visible. Skipped for denser series to avoid clutter.
+        show_points = len(price_df) <= 3
         layers.append(
-            alt.Chart(price_df).mark_line(color=_PRICE_UP_COLOR if is_up else _PRICE_DOWN_COLOR, clip=True).encode(
+            alt.Chart(price_df).mark_line(
+                color=_PRICE_UP_COLOR if is_up else _PRICE_DOWN_COLOR, clip=True, point=show_points
+            ).encode(
                 x=alt.X("Date:T", title=None),
                 y=alt.Y("Close:Q", title="Price", scale=alt.Scale(domain=domain, zero=False)),
                 tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Close:Q", format=".2f", title="Close")],

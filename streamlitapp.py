@@ -28,6 +28,20 @@ def is_market_open():
 
     return market_open <= now <= market_close
 
+def format_relative_date(when: datetime) -> str:
+    """Formats a date as 'Today'/'Yesterday', a weekday name (within the last week), or dd.mm.yy."""
+    target = when.astimezone(zoneinfo.ZoneInfo("America/New_York")).date() if when.tzinfo else when.date()
+    today = datetime.now(zoneinfo.ZoneInfo("America/New_York")).date()
+    delta_days = (today - target).days
+
+    if delta_days == 0:
+        return "Today"
+    if delta_days == 1:
+        return "Yesterday"
+    if 0 < delta_days < 7:
+        return target.strftime('%A')
+    return target.strftime('%d.%m.%y')
+
 popular_tickers = (
         'AAPL', 'AMZN', 'GOOGL','META', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'DOW'
     )
@@ -146,6 +160,7 @@ def get_cached_options_data(ticker_symbol, selected_exp):
     return df, target_exp, all_exps, price, change, percent_change, name, retrieval_time
 
 res = None
+current_price = None
 if st.session_state['ticker_ready']:
     with st.spinner(f"Loading {st.session_state['ticker']} data..."):
         raw_df, target_exp, all_exps, current_price, price_change, price_pct_change, company_name, retrieval_time = get_cached_options_data(st.session_state['ticker'], exp_date)
@@ -232,6 +247,15 @@ with price_chart_col:
     period_label = st.session_state['price_chart_period']
     hist_df = get_cached_price_history(st.session_state['ticker'], PRICE_CHART_PERIODS[period_label])
 
+    info_line_parts = []
+
+    # Dollar signs must be escaped (\$) - st.markdown treats unescaped $...$ as inline
+    # LaTeX math, which mangles everything between two unescaped $ in this line.
+    if current_price is not None:
+        info_line_parts.append(
+            f"<span style='color: #4798a5; font-weight: bold;'>Current Price: \\${current_price:,.2f}</span>"
+        )
+
     period_change = optionchain.get_period_change(hist_df)
     if period_change is not None:
         change, pct_change = period_change
@@ -242,11 +266,18 @@ with price_chart_col:
         else:
             change_color = "grey"
         sign = "+" if change > 0 else "-" if change < 0 else ""
-        change_text = f"{sign}${abs(change):,.2f} ({pct_change:+.2f}%)" if change != 0 else "Unchanged"
-        st.markdown(
-            f"<span style='color: {change_color}; font-weight: bold;'>{period_label} change: {change_text}</span>",
-            unsafe_allow_html=True
+        change_text = f"{sign}\\${abs(change):,.2f} ({pct_change:+.2f}%)" if change != 0 else "Unchanged"
+        info_line_parts.append(
+            f"<span style='color: {change_color}; font-weight: bold;'>{period_label} change: {change_text}</span>"
         )
+
+    if period_label == "1 Day" and not is_market_open() and hist_df is not None and not hist_df.empty:
+        info_line_parts.append(
+            f"<span style='color: grey;'>Data from: {format_relative_date(hist_df.index[-1])}</span>"
+        )
+
+    if info_line_parts:
+        st.markdown(" | ".join(info_line_parts), unsafe_allow_html=True)
 
     key_levels = res['context'].get_key_price_levels() if res is not None else {}
     strike_range = res['context'].get_strike_range() if res is not None else None

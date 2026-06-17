@@ -742,6 +742,10 @@ def calls_puts_side_by_side_distance_from_strike(
     df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Open Interest', 'Open Interest.1', df_context, bar_scaling_mode)
     df_context.styled_df = style_proportional_bars(df_context.df, df_context.styled_df, 'Volume', 'Volume.1', df_context, bar_scaling_mode)
     df_context.styled_df = format_style(df_context.styled_df)
+    # Volume and Open Interest are share/contract counts; display as integers, no decimals.
+    int_cols = [c for c in ('Volume', 'Volume.1', 'Open Interest', 'Open Interest.1') if c in df_context.df.columns]
+    if int_cols:
+        df_context.styled_df = df_context.styled_df.format({c: '{:,.0f}' for c in int_cols}, subset=int_cols)
     # IV is a fraction (e.g. 0.35); display as a percentage. Guarded since CSV-loaded
     # chains (the filepath= path in main()) may not have IV columns at all.
     iv_cols = [c for c in ('IV', 'IV.1') if c in df_context.df.columns]

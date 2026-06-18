@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import yfinanceGetOptions
 
@@ -21,6 +21,21 @@ def _make_chain_df(strikes=[100.0]):
     })
 
 # --- Unit Tests ---
+
+class TestGetDefaultExpiration:
+    """Verifies the 0DTE-skipping default expiration logic."""
+
+    def test_skips_today_when_later_date_exists(self):
+        today = datetime.now().date().isoformat()
+        later = (datetime.now().date() + timedelta(days=7)).isoformat()
+        assert yfinanceGetOptions.get_default_expiration([today, later]) == later
+
+    def test_falls_back_to_today_when_only_option(self):
+        today = datetime.now().date().isoformat()
+        assert yfinanceGetOptions.get_default_expiration([today]) == today
+
+    def test_empty_list_returns_none(self):
+        assert yfinanceGetOptions.get_default_expiration([]) is None
 
 class TestGetOptionsChainRetrievalTime:
     """Focuses on the timestamp extraction logic in yfinanceGetOptions."""

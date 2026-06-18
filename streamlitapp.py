@@ -175,8 +175,11 @@ with search_col1:
         st.warning(f"No options data found for ticker: {st.session_state['ticker']}")
         st.session_state['ticker_ready'] = False
 
-    if 'exp_date_select' not in st.session_state and qp_exp and qp_exp in available_dates:
-        st.session_state['exp_date_select'] = qp_exp
+    if 'exp_date_select' not in st.session_state:
+        if qp_exp and qp_exp in available_dates:
+            st.session_state['exp_date_select'] = qp_exp
+        elif available_dates:
+            st.session_state['exp_date_select'] = yfi_module.get_default_expiration(available_dates)
 
     exp_date = st.selectbox("Expiration Date", options=available_dates, key='exp_date_select', help="Select an expiration date to view its option chain.")
 

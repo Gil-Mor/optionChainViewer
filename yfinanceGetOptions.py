@@ -17,6 +17,18 @@ def get_name_from_ticker(symbol: str):
     except:
         return None
 
+def get_default_expiration(exp_dates: list[str]) -> str | None:
+    """Pick the default expiration: skip 0DTE (today) when a later one exists,
+    since 0DTE chains are thin/noisy and not representative for general viewing.
+    """
+    if not exp_dates:
+        return None
+    today = datetime.now().date().isoformat()
+    for exp in exp_dates:
+        if exp != today:
+            return exp
+    return exp_dates[0]  # only 0DTE available - fall back to it
+
 def get_options_chain_table(symbol: str,
     expiration_date=None,
     keep_only_common_strikes: bool = True) -> tuple[pd.DataFrame, str, list, datetime]:
@@ -50,7 +62,7 @@ def get_options_chain_table(symbol: str,
                 return pd.DataFrame(), "", [], None
             target_exp = expiration_date
         else:
-            target_exp = exp_dates[0]  # Nearest expiration
+            target_exp = get_default_expiration(exp_dates)
 
         print(f"Getting options chain for {symbol} expiring on {target_exp}")
 

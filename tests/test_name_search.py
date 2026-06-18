@@ -335,9 +335,9 @@ class TestStreamlitNameSearchUI:
         with _patched_app() as at:
             assert not at.exception
 
-    def test_initial_ticker_defaults_to_nvda(self):
+    def test_initial_ticker_defaults_to_spy(self):
         with _patched_app() as at:
-            assert at.session_state["ticker"] == "NVDA"
+            assert at.session_state["ticker"] == "SPY"
 
     def test_initial_company_name_populated_after_load(self):
         with _patched_app(main_result=_minimal_main_result(company_name="NVIDIA Corporation")) as at:
@@ -371,7 +371,7 @@ class TestStreamlitNameSearchUI:
             assert at.session_state["ticker_ready"] is False
             at.text_input[0].set_value("").run()
         assert at.session_state["ticker_ready"] is True
-        assert at.session_state["ticker"] == "NVDA"
+        assert at.session_state["ticker"] == "SPY"
 
     def test_empty_name_field_does_not_trigger_search(self):
         """Clearing the name field must not change the ticker."""
@@ -397,7 +397,7 @@ class TestStreamlitNameSearchUI:
             # Clearing the name field should restore ticker_ready
             at.text_input[1].set_value("").run()
         assert at.session_state["ticker_ready"] is True
-        assert at.session_state["ticker"] == "NVDA"
+        assert at.session_state["ticker"] == "SPY"
 
     def test_whitespace_only_name_does_not_trigger_search(self):
         with _patched_app() as at:

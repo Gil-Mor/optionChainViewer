@@ -1,5 +1,6 @@
 import streamlit as st
 import optionchain
+import watchlist
 import yfinance as yf
 import yfinanceGetOptions as yfi_module
 from datetime import datetime
@@ -68,7 +69,7 @@ def get_available_dates(ticker_symbol):
     except Exception:
         return []
 
-DEFAULT_TICKER = 'NVDA'
+DEFAULT_TICKER = 'SPY'
 
 qp_ticker = st.query_params.get('ticker')
 qp_exp = st.query_params.get('exp')
@@ -89,6 +90,9 @@ if 'ticker_ready' not in st.session_state:
     st.session_state['ticker_ready'] = True
 if 'column_visibility' not in st.session_state:
     st.session_state['column_visibility'] = {col: default for _, col, default in COLUMN_VISIBILITY_OPTIONS}
+
+cookie_controller = watchlist.get_controller()
+watchlist.ensure_loaded(cookie_controller)
 
 st.session_state['ticker_query'] = st.session_state['ticker']
 st.session_state['name_query'] = yfi_module.get_name_from_ticker(st.session_state['ticker'])
@@ -128,10 +132,40 @@ def use_ticker_or_name_query(widget_key: str):
             st.session_state['ticker_ready'] = False
 
 
+def toggle_watchlist_callback():
+    current_ticker = st.session_state['ticker']
+    current_name = st.session_state.get('company_name_display') or current_ticker
+    watchlist.toggle(cookie_controller, current_ticker, current_name)
+
+
 with search_col1:
     ticker_query = st.text_input(label="Search by Ticker", key='ticker_query', help=f"Ticker ideas: {', '.join(popular_tickers)}", on_change=use_ticker_or_name_query, args=('ticker_query',))
+
     if st.session_state['company_name_display']:
         st.caption(f"**{st.session_state['company_name_display']}**")
+
+    in_watchlist = watchlist.is_in_watchlist(st.session_state['ticker'])
+    st.markdown(
+        """<style>
+        .st-key-watchlist_star_toggle button[kind="primary"] {
+            background-color: #f0c419;
+            border-color: #f0c419;
+            color: #1a1a1a;
+        }
+        .st-key-watchlist_star_toggle button[kind="primary"]:hover {
+            background-color: #d6ad17;
+            border-color: #d6ad17;
+            color: #1a1a1a;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    st.button(
+        "★ Remove from Watchlist" if in_watchlist else "☆ Add to Watchlist",
+        key="watchlist_star_toggle",
+        type="primary" if in_watchlist else "secondary",
+        on_click=toggle_watchlist_callback,
+    )
 
     name_query = st.text_input("Search by Company / Security Name", key='name_query', on_change=use_ticker_or_name_query, args=('name_query', ))
 
@@ -151,7 +185,34 @@ if st.session_state['ticker_ready'] and st.session_state.get('ticker'):
     if exp_date:
         st.query_params['exp'] = exp_date
 
+def jump_to_watchlist_ticker():
+    selected = st.session_state.get('watchlist_jump_select')
+    if not selected:
+        return
+    ticker = selected.split(' — ', 1)[0]
+    st.session_state['ticker'] = ticker
+    st.session_state['ticker_query'] = ticker
+    st.session_state['name_query'] = ''
+    st.session_state['ticker_ready'] = True
+    st.session_state['watchlist_jump_select'] = None
+
+
 with st.sidebar:
+    st.header("⭐ Watchlist")
+
+    watchlist_entries = st.session_state['watchlist']
+    watchlist_select_options = [f"{e['ticker']} — {e['name']}" for e in watchlist_entries]
+    st.selectbox(
+        "Jump to ticker",
+        options=watchlist_select_options,
+        index=None,
+        key='watchlist_jump_select',
+        placeholder="🔍 Search watchlist...",
+        help="Star a ticker (next to the ticker search box) to add or remove it from this list.",
+        on_change=jump_to_watchlist_ticker,
+    )
+
+    st.write("---")
     st.header("Chain View Settings")
 
     display_mode = st.radio(
@@ -357,3 +418,6 @@ with price_chart_col:
             "Range", list(PRICE_CHART_PERIODS.keys()), horizontal=True, key="price_chart_period",
             label_visibility="collapsed"
         )
+
+st.write("---")
+st.caption("🍪 This site uses cookies only for functional purposes, such as remembering your Watchlist. No marketing, analytics, or tracking cookies are used.")

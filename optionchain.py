@@ -967,6 +967,7 @@ class OptionContext:
         bearish or alarming market signal.
         """
         breakdown_df = pd.DataFrame(self.get_technical_breakdown())
+        breakdown_df = breakdown_df[["Aspect", "Status", "Market Implication (MMs/Institutions vs Retail)", "Logic"]]
 
         def highlight_warnings(row: pd.Series) -> list[str]:
             if "⚠️" in str(row["Status"]):

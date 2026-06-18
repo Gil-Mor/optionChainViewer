@@ -681,11 +681,30 @@ class OptionContext:
         # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
         # applicable, skip silently
 
-        # Rule 7: OTM IV Skew (Put vs Call) - the "volatility smirk".
-        # Guarded: CSV-loaded chains (filepath= in main()) may not have IV columns.
+        # Rule 7: OTM IV Skew (Put vs Call) - the "volatility smirk". Computed from
+        # original_df (the full, untrimmed chain), not self.df - same reasoning as
+        # calculate_max_pain()/_wall_strike(): a user's trim setting narrows what's
+        # *displayed*, but shouldn't narrow what this average is computed over and
+        # silently make a real skew reading look implausible. Guarded: CSV-loaded
+        # chains (filepath= in main()) may not have IV columns.
         if 'IV' in self.df.columns and 'IV.1' in self.df.columns:
-            otm_call_iv = self.otm_calls['IV'].mean() if not self.otm_calls.empty else float('nan')
-            otm_put_iv = self.otm_puts['IV.1'].mean() if not self.otm_puts.empty else float('nan')
+            otm_calls_full = self.original_df[
+                (self.original_df["Strike"] > self.current_price) & (self.original_df["Strike"] != self.atm_strike)
+            ]
+            otm_puts_full = self.original_df[
+                (self.original_df["Strike"] < self.current_price) & (self.original_df["Strike"] != self.atm_strike)
+            ]
+            otm_call_iv = otm_calls_full['IV'].mean() if not otm_calls_full.empty else float('nan')
+            otm_put_iv = otm_puts_full['IV.1'].mean() if not otm_puts_full.empty else float('nan')
+
+            # Surfaced whenever the displayed chain is narrower than the full chain this
+            # rule actually computes from, so a user looking only at the visible rows
+            # isn't left wondering why the numbers don't match what they'd eyeball.
+            trim_note = (
+                f" (Computed from the full {len(self.original_df)}-strike chain - "
+                f"your current view is trimmed to {len(self.df)} strikes.)"
+                if len(self.df) < len(self.original_df) else ""
+            )
 
             if self._iv_is_plausible(otm_call_iv) and self._iv_is_plausible(otm_put_iv):
                 iv_skew_ratio = otm_put_iv / otm_call_iv
@@ -714,14 +733,14 @@ class OptionContext:
                 breakdown.append({
                     "Aspect": "IV Skew (OTM Put vs Call)",
                     "Status": f"{status} (Ratio: {iv_skew_ratio:.2f})",
-                    "Logic": f"Rule: {rule_ref} (Avg OTM Call IV: {otm_call_iv:.1%}, Avg OTM Put IV: {otm_put_iv:.1%})",
+                    "Logic": f"Rule: {rule_ref} (Avg OTM Call IV: {otm_call_iv:.1%}, Avg OTM Put IV: {otm_put_iv:.1%}){trim_note}",
                     "Market Implication (MMs/Institutions vs Retail)": mm_inst
                 })
             else:
                 breakdown.append({
                     "Aspect": "IV Skew (OTM Put vs Call)",
                     "Status": "N/A ⚠️ IV unreliable",
-                    "Logic": "OTM Call/Put IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot compute skew.",
+                    "Logic": f"OTM Call/Put IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot compute skew.{trim_note}",
                     "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
                 })
         # else: IV columns absent entirely (e.g. CSV-loaded chain) - feature not applicable, skip silently

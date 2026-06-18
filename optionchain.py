@@ -59,6 +59,21 @@ class OptionContext:
     def get_puts_strike_col_index(self) -> int:
         return self.df.columns.get_loc(self.puts_strike_col_name)
 
+    def _wall_strike(self, oi_col: str, vol_col: str, strike_col: str) -> tuple[float, bool]:
+        """Strike with the highest value in oi_col, falling back to vol_col when oi_col
+        is entirely zero (yfinance sometimes doesn't report Open Interest for an
+        expiration). With all-zero OI, idxmax()'s tie-break just returns the first row,
+        producing a meaningless "wall" at the edge of the displayed strike range rather
+        than reflecting any real positioning.
+
+        Returns (strike, used_volume_fallback).
+        """
+        if self.df[oi_col].sum() == 0:
+            idx = self.df[vol_col].idxmax()
+            return float(self.df.loc[idx, strike_col]), True
+        idx = self.df[oi_col].idxmax()
+        return float(self.df.loc[idx, strike_col]), False
+
     def get_key_price_levels(self) -> dict[str, float]:
         """Returns key option-derived price levels (OI walls) for charting.
 
@@ -72,12 +87,12 @@ class OptionContext:
         OI can win the full-chain max but isn't a meaningful near-term level, and showing
         a different wall on the chart than in the TA table is just confusing.
         """
-        max_call_idx = self.df["Open Interest"].idxmax()
-        max_put_idx = self.df["Open Interest.1"].idxmax()
+        call_wall, _ = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name)
+        put_wall, _ = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name)
 
         return {
-            "Resistance (Call Wall)": float(self.df.loc[max_call_idx, self.calls_strike_col_name]),
-            "Support (Put Wall)": float(self.df.loc[max_put_idx, self.puts_strike_col_name]),
+            "Resistance (Call Wall)": call_wall,
+            "Support (Put Wall)": put_wall,
         }
 
     def get_strike_range(self) -> tuple[float, float]:
@@ -356,19 +371,26 @@ class OptionContext:
         })
 
         # Rule 4: Key Technical Levels (OI Walls)
-        # Find strikes with max Call OI and max Put OI
-        max_call_idx = self.df["Open Interest"].idxmax()
-        max_put_idx = self.df["Open Interest.1"].idxmax()
-
-        call_wall = self.df.loc[max_call_idx, self.calls_strike_col_name]
-        put_wall = self.df.loc[max_put_idx, self.puts_strike_col_name]
+        # Find strikes with max Call OI and max Put OI (falls back to Volume if OI is
+        # entirely missing/zero for this chain - see _wall_strike)
+        call_wall, call_used_vol = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name)
+        put_wall, put_used_vol = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name)
+        oi_missing = call_used_vol or put_used_vol
 
         status_text = f"Resistance: {call_wall} | Support: {put_wall}"
+        logic_text = "Identifying strikes with the highest Open Interest concentration."
+        if oi_missing:
+            status_text += " ⚠️ Open Interest unavailable - using Volume instead"
+            logic_text = (
+                "Open Interest is missing/zero for every strike in this chain (a known yfinance gap, "
+                "common on illiquid or far-dated expirations) - falling back to highest Volume strikes "
+                "instead. Treat these levels as low-confidence."
+            )
 
         breakdown.append({
             "Aspect": "Institutional 'Walls'",
             "Status": status_text,
-            "Logic": "Identifying strikes with the highest Open Interest concentration.",
+            "Logic": logic_text,
             "Market Implication (MMs/Institutions vs Retail)": (
                 f"The Call Wall at {call_wall} acts as a ceiling where MMs are net sellers, creating heavy resistance. "
                 f"The Put Wall at {put_wall} acts as a floor where institutions have bought protection. "
@@ -500,6 +522,20 @@ class OptionContext:
             })
 
         return breakdown
+
+    def get_technical_breakdown_styler(self) -> Styler:
+        """Styled get_technical_breakdown() for display: rows flagged with a "⚠️" in
+        their Status (e.g. the OI-walls rule falling back to Volume because Open
+        Interest is missing) are highlighted in red so the caveat isn't missed.
+        """
+        breakdown_df = pd.DataFrame(self.get_technical_breakdown())
+
+        def highlight_warnings(row: pd.Series) -> list[str]:
+            if "⚠️" in str(row["Status"]):
+                return ['color: #dc3545; font-weight: bold'] * len(row)
+            return [''] * len(row)
+
+        return breakdown_df.style.hide(axis='index').apply(highlight_warnings, axis=1)
 
     def color_change_values(self) -> None:
         def color_gradient(val):
@@ -1141,7 +1177,7 @@ def main(
         "available_expiration_dates": available_expiration_dates,
         "context": df_context,
         "sentiment_summary_styler": df_context.get_sentiment_summary_styler(),
-        "technical_breakdown": df_context.get_technical_breakdown(),
+        "technical_breakdown": df_context.get_technical_breakdown_styler(),
         "company_name": company_name,
         "retrieval_time": retrieval_time
     }

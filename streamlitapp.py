@@ -247,7 +247,7 @@ if st.session_state['ticker_ready']:
         else:
             st.caption("No time data available.")
         if not is_market_open():
-            st.info("🌙 US Markets are currently closed. Intraday data may remain from the last close or be missing. Open Interest should be available.")
+            st.info("🌙 US Markets are currently closed. Intraday data may remain from the last close or be missing.")
 
         df = res['styled_dataframe']
 

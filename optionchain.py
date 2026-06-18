@@ -252,6 +252,58 @@ class OptionContext:
                 return False
         return True
 
+    def _iv_implausibility_threshold_text(self, iv: float) -> str:
+        """Names which plausibility threshold an already-failing (>0) iv value falls
+        short of, with the concrete numbers - used to explain N/A IV reasons precisely
+        instead of restating the general "missing, zero, or implausibly low" policy.
+        Only meaningful for iv that _iv_is_plausible() has already rejected.
+        """
+        if iv < _MIN_PLAUSIBLE_IV:
+            return f"below the {_MIN_PLAUSIBLE_IV:.0%} floor for a believable real quote"
+        relative_floor = self.realized_vol * _MIN_IV_TO_REALIZED_VOL_RATIO
+        return (
+            f"below {_MIN_IV_TO_REALIZED_VOL_RATIO:.0%} of this stock's {self.realized_vol:.1%} "
+            f"trailing Realized Vol ({relative_floor:.1%})"
+        )
+
+    def _iv_na_explanation(self, iv: float, label: str) -> str:
+        """Full descriptive clause for why a given (label, iv) pair fails plausibility,
+        e.g. 'Avg OTM Call IV (0.4%) is below the 1% floor for a believable real quote'.
+        """
+        if pd.isna(iv) or not math.isfinite(iv) or iv <= 0:
+            return f"{label} is missing or reads as zero"
+        return f"{label} ({iv:.1%}) is {self._iv_implausibility_threshold_text(iv)}"
+
+    def _atm_iv_na_reason(self) -> str:
+        """Explains exactly why _get_atm_iv() returned None - the concrete threshold
+        and the closest candidate actually found, instead of a generic "missing or
+        implausible". Searches the same near-ATM window _get_atm_iv() itself does.
+        """
+        if 'IV' not in self.df.columns or 'IV.1' not in self.df.columns:
+            return "IV columns aren't present in this chain."
+
+        nearest = self.df.assign(
+            _dist_from_price=(self.df[self.calls_strike_col_name] - self.current_price).abs()
+        ).nsmallest(_NEAR_ATM_WINDOW, "_dist_from_price")
+        window_n = len(nearest)
+
+        candidates = [
+            v for col in ('IV', 'IV.1') for v in nearest[col]
+            if pd.notna(v) and math.isfinite(v) and v > 0
+        ]
+        if not candidates:
+            return (
+                f"No strike within the {window_n} nearest the current price has any nonzero "
+                "IV quote at all, on either side - likely all locked/placeholder data."
+            )
+
+        best = max(candidates)
+        return (
+            f"The closest usable IV within the {window_n} nearest strikes to the current price "
+            f"was {best:.1%}, which is {self._iv_implausibility_threshold_text(best)} - treated "
+            "as an unreliable/placeholder quote rather than real (if unusually cheap) volatility."
+        )
+
     def _get_atm_iv(self) -> float | None:
         """Average of call/put IV at the ATM strike, or whichever side is available.
 
@@ -675,7 +727,7 @@ class OptionContext:
             breakdown.append({
                 "Aspect": "Probability vs Key Levels",
                 "Status": "N/A ⚠️ IV unreliable",
-                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate probability of breaking key levels.",
+                "Logic": f"{self._atm_iv_na_reason()} Cannot estimate probability of breaking key levels.",
                 "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
             })
         # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
@@ -737,10 +789,15 @@ class OptionContext:
                     "Market Implication (MMs/Institutions vs Retail)": mm_inst
                 })
             else:
+                reasons = []
+                if not self._iv_is_plausible(otm_call_iv):
+                    reasons.append(self._iv_na_explanation(otm_call_iv, "Avg OTM Call IV"))
+                if not self._iv_is_plausible(otm_put_iv):
+                    reasons.append(self._iv_na_explanation(otm_put_iv, "Avg OTM Put IV"))
                 breakdown.append({
                     "Aspect": "IV Skew (OTM Put vs Call)",
                     "Status": "N/A ⚠️ IV unreliable",
-                    "Logic": f"OTM Call/Put IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot compute skew.{trim_note}",
+                    "Logic": f"{'; '.join(reasons)} - cannot compute skew.{trim_note}",
                     "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
                 })
         # else: IV columns absent entirely (e.g. CSV-loaded chain) - feature not applicable, skip silently
@@ -775,7 +832,7 @@ class OptionContext:
             breakdown.append({
                 "Aspect": "Implied Move (to Expiration)",
                 "Status": "N/A ⚠️ IV unreliable",
-                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate implied move.",
+                "Logic": f"{self._atm_iv_na_reason()} Cannot estimate implied move.",
                 "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
             })
         # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
@@ -815,7 +872,7 @@ class OptionContext:
             breakdown.append({
                 "Aspect": "Probability Range (1σ / 2σ)",
                 "Status": "N/A ⚠️ IV unreliable",
-                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate probability range.",
+                "Logic": f"{self._atm_iv_na_reason()} Cannot estimate probability range.",
                 "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
             })
         # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
@@ -855,7 +912,7 @@ class OptionContext:
             # Realized Vol came back missing, zero, or implausible - a data gap, not a
             # feature that's simply inapplicable to this chain.
             if atm_iv is None:
-                reason = "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain"
+                reason = self._atm_iv_na_reason()
             else:
                 reason = "Realized Volatility could not be calculated (e.g. insufficient price history)"
             breakdown.append({

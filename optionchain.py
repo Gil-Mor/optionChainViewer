@@ -1473,9 +1473,25 @@ def build_price_chart(
             alt.Chart(price_df).mark_line(
                 color=_PRICE_UP_COLOR if is_up else _PRICE_DOWN_COLOR, clip=True, point=show_points
             ).encode(
-                x=alt.X("Date:T", title=None),
+                x=alt.X(
+                    "Date:T",
+                    title=None,
+                    # Default tick labels use 12-hour AM/PM; force 24-hour time for
+                    # intraday ticks while leaving day/month/year ticks (always at
+                    # midnight, for the 1mo/1y/max periods) showing as plain dates.
+                    axis=alt.Axis(
+                        labelExpr=(
+                            "(hours(datum.value) == 0 && minutes(datum.value) == 0) "
+                            "? timeFormat(datum.value, '%b %d') "
+                            ": timeFormat(datum.value, '%H:%M')"
+                        )
+                    ),
+                ),
                 y=alt.Y("Close:Q", title="Price", scale=alt.Scale(domain=domain, zero=False)),
-                tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Close:Q", format=".2f", title="Close")],
+                tooltip=[
+                    alt.Tooltip("Date:T", format="%b %d, %Y, %H:%M", title="Date"),
+                    alt.Tooltip("Close:Q", format=".2f", title="Close"),
+                ],
             )
         )
 

@@ -43,6 +43,12 @@ _MIN_PLAUSIBLE_IV = 0.01
 # unusual) cheap-vol readings between this floor and 0.85 still come through normally.
 _MIN_IV_TO_REALIZED_VOL_RATIO = 0.25
 
+# Fixed approximation of the risk-free rate (~short-term T-bill yield). Not fetched
+# live - its effect on these probability estimates is small relative to ATM IV over
+# typical option DTE windows, same simplification tradeoff as using a single flat
+# ATM IV instead of per-strike IV.
+_RISK_FREE_RATE = 0.045
+
 
 class OptionContext:
     def __init__(self,
@@ -251,27 +257,32 @@ class OptionContext:
 
         Reads from self.df (the displayed table), consistent with how get_total_stats()
         and the IV skew rule already scale against the displayed chain rather than
-        original_df. Returns None if IV columns are absent or the ATM row's IV is
-        unusable or implausible (see _iv_is_plausible).
+        original_df. Falls back to the nearest strike (within _NEAR_ATM_WINDOW of
+        current_price) with plausible IV on at least one side if the exact ATM strike's
+        IV is missing/implausible on both sides - a single locked/crossed quote at that
+        one strike (common for 0DTE or thinly-traded names) shouldn't blank out every
+        IV-driven rule when neighboring strikes are fine. Returns None if IV columns are
+        absent or no strike in that window has usable IV.
         """
         if 'IV' not in self.df.columns or 'IV.1' not in self.df.columns:
             return None
 
-        atm_row = self.df[self.df[self.calls_strike_col_name] == self.atm_strike]
-        if atm_row.empty:
-            return None
+        nearest = self.df.assign(
+            _dist_from_price=(self.df[self.calls_strike_col_name] - self.current_price).abs()
+        ).nsmallest(_NEAR_ATM_WINDOW, "_dist_from_price")
 
-        call_iv = atm_row['IV'].iloc[0]
-        put_iv = atm_row['IV.1'].iloc[0]
-        call_valid = self._iv_is_plausible(call_iv)
-        put_valid = self._iv_is_plausible(put_iv)
+        for _, row in nearest.iterrows():
+            call_iv = row['IV']
+            put_iv = row['IV.1']
+            call_valid = self._iv_is_plausible(call_iv)
+            put_valid = self._iv_is_plausible(put_iv)
 
-        if call_valid and put_valid:
-            return (call_iv + put_iv) / 2
-        if call_valid:
-            return float(call_iv)
-        if put_valid:
-            return float(put_iv)
+            if call_valid and put_valid:
+                return (call_iv + put_iv) / 2
+            if call_valid:
+                return float(call_iv)
+            if put_valid:
+                return float(put_iv)
         return None
 
     def calculate_implied_move(self) -> dict | None:
@@ -297,6 +308,41 @@ class OptionContext:
             "low": self.current_price - move_dollar,
             "high": self.current_price + move_dollar,
         }
+
+    def calculate_probability_cone(self) -> dict | None:
+        """Implied Move's 1-SD (68%) band plus an approximate 2-SD (95%) band, by
+        doubling the 1-SD move - the same Empirical Rule approximation already
+        implicit in treating the IV-implied move as ~normal.
+        """
+        implied_move = self.calculate_implied_move()
+        if implied_move is None:
+            return None
+
+        move_dollar = implied_move["move_dollar"]
+        return {
+            **implied_move,
+            "low_2sd": self.current_price - 2 * move_dollar,
+            "high_2sd": self.current_price + 2 * move_dollar,
+        }
+
+    def _probability_above_strike(self, strike: float) -> float | None:
+        """Risk-neutral probability the stock finishes above `strike` at expiration,
+        via Black-Scholes N(d2). Uses flat ATM IV (same simplification as
+        calculate_implied_move) rather than per-strike IV, so it ignores the vol skew
+        tracked separately by the IV Skew rule.
+        """
+        if self.dte is None or self.dte <= 0 or strike <= 0 or self.current_price <= 0:
+            return None
+
+        atm_iv = self._get_atm_iv()
+        if atm_iv is None:
+            return None
+
+        t = self.dte / 365
+        d2 = (
+            math.log(self.current_price / strike) + (_RISK_FREE_RATE - 0.5 * atm_iv ** 2) * t
+        ) / (atm_iv * math.sqrt(t))
+        return 0.5 * (1 + math.erf(d2 / math.sqrt(2)))
 
     def calculate_avg_spread_pct(self) -> float | None:
         """Average bid/ask spread, as % of midpoint, across the displayed table.
@@ -583,7 +629,59 @@ class OptionContext:
                 )
             })
 
-        # Rule 6: OTM IV Skew (Put vs Call) - the "volatility smirk".
+        # Rule 6: Probability vs Key Levels - risk-neutral odds (Black-Scholes N(d2),
+        # flat ATM IV) of price actually breaking the Call/Put Walls and Max Pain by
+        # expiration, rather than just naming the levels as in Rules 4-5. Guarded the
+        # same way as Implied Move: 'no DTE or IV columns missing entirely' (skip
+        # silently) is distinct from 'ATM IV present but unreliable' (show N/A).
+        p_above_call_wall = self._probability_above_strike(call_wall)
+        p_above_put_wall = self._probability_above_strike(put_wall)
+
+        if p_above_call_wall is not None and p_above_put_wall is not None:
+            p_below_put_wall = 1 - p_above_put_wall
+
+            status_text = (
+                f"{p_above_call_wall:.0%} chance above Call Wall (${call_wall}) | "
+                f"{p_below_put_wall:.0%} chance below Put Wall (${put_wall})"
+            )
+            logic_text = (
+                f"Black-Scholes N(d2), flat ATM IV ({self._get_atm_iv():.1%}), {_RISK_FREE_RATE:.1%} fixed risk-free rate. "
+                "Same flat-vol simplification as Implied Move - ignores the skew tracked separately by the IV Skew rule."
+            )
+            mm_inst = (
+                "A low chance of breaking the Call Wall reinforces it as resistance MMs will defend; a high chance "
+                "suggests that level may not hold. Same read in reverse for the Put Wall as support."
+            )
+
+            if max_pain is not None:
+                p_above_max_pain = self._probability_above_strike(max_pain)
+                if p_above_max_pain is not None:
+                    status_text += f" | {p_above_max_pain:.0%} chance above Max Pain (${max_pain:,.2f})"
+
+            breakdown.append({
+                "Aspect": "Probability vs Key Levels",
+                "Status": status_text,
+                "Logic": logic_text,
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
+        elif self.dte is not None and self.dte <= 0:
+            breakdown.append({
+                "Aspect": "Probability vs Key Levels",
+                "Status": f"N/A - {self.dte} DTE",
+                "Logic": "This expiration has 0 (or negative) days to expiration - no remaining time premium to derive a risk-neutral probability from.",
+                "Market Implication (MMs/Institutions vs Retail)": "Not applicable for an expiration that has already settled or expires today."
+            })
+        elif self.dte is not None and self.dte > 0 and 'IV' in self.df.columns and 'IV.1' in self.df.columns:
+            breakdown.append({
+                "Aspect": "Probability vs Key Levels",
+                "Status": "N/A ⚠️ IV unreliable",
+                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate probability of breaking key levels.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
+            })
+        # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
+        # applicable, skip silently
+
+        # Rule 7: OTM IV Skew (Put vs Call) - the "volatility smirk".
         # Guarded: CSV-loaded chains (filepath= in main()) may not have IV columns.
         if 'IV' in self.df.columns and 'IV.1' in self.df.columns:
             otm_call_iv = self.otm_calls['IV'].mean() if not self.otm_calls.empty else float('nan')
@@ -628,7 +726,7 @@ class OptionContext:
                 })
         # else: IV columns absent entirely (e.g. CSV-loaded chain) - feature not applicable, skip silently
 
-        # Rule 7: Implied Move - the market's own forecast range for price by expiration.
+        # Rule 8: Implied Move - the market's own forecast range for price by expiration.
         implied_move = self.calculate_implied_move()
         if implied_move is not None:
             breakdown.append({
@@ -644,6 +742,13 @@ class OptionContext:
                     "beyond this range by expiration would be a bigger surprise than current option prices expect."
                 )
             })
+        elif self.dte is not None and self.dte <= 0:
+            breakdown.append({
+                "Aspect": "Implied Move (to Expiration)",
+                "Status": f"N/A - {self.dte} DTE",
+                "Logic": "This expiration has 0 (or negative) days to expiration - no remaining time premium to derive an implied move from.",
+                "Market Implication (MMs/Institutions vs Retail)": "Not applicable for an expiration that has already settled or expires today."
+            })
         elif self.dte is not None and self.dte > 0 and 'IV' in self.df.columns and 'IV.1' in self.df.columns:
             # DTE and IV columns are both available, so implied_move failed only because
             # ATM IV itself was missing, zero, or implausible - a data gap worth flagging,
@@ -654,10 +759,50 @@ class OptionContext:
                 "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate implied move.",
                 "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
             })
-        # else: no expiration date or no IV columns at all (e.g. CSV-loaded chain) - feature
-        # not applicable, skip silently
+        # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
+        # applicable, skip silently
 
-        # Rule 8: IV vs Realized Volatility - a substitute for IV Rank/Percentile, which
+        # Rule 9: Probability Range (1-SD / 2-SD) - extends Implied Move's 1-SD (68%)
+        # band above with an approximate 2-SD (95%) band, by doubling the 1-SD move.
+        probability_cone = self.calculate_probability_cone()
+        if probability_cone is not None:
+            breakdown.append({
+                "Aspect": "Probability Range (1σ / 2σ)",
+                "Status": (
+                    f"68%: ${probability_cone['low']:,.2f}-${probability_cone['high']:,.2f} | "
+                    f"95%: ${probability_cone['low_2sd']:,.2f}-${probability_cone['high_2sd']:,.2f}"
+                ),
+                "Logic": (
+                    "1σ band is the Implied Move above; 2σ band doubles it (Empirical Rule "
+                    "approximation for a roughly lognormal price distribution)."
+                ),
+                "Market Implication (MMs/Institutions vs Retail)": (
+                    "Roughly a 32% chance price finishes outside the narrower (1σ) band, and a ~5% chance "
+                    "outside the wider (2σ) band, by expiration. Useful context for strike selection when "
+                    "selling premium - strikes outside the 2σ band have an approximate 95% chance of "
+                    "expiring OTM under this model, though it ignores tail risk and vol skew."
+                )
+            })
+        elif self.dte is not None and self.dte <= 0:
+            breakdown.append({
+                "Aspect": "Probability Range (1σ / 2σ)",
+                "Status": f"N/A - {self.dte} DTE",
+                "Logic": "This expiration has 0 (or negative) days to expiration - no remaining time premium to derive a probability range from.",
+                "Market Implication (MMs/Institutions vs Retail)": "Not applicable for an expiration that has already settled or expires today."
+            })
+        elif self.dte is not None and self.dte > 0 and 'IV' in self.df.columns and 'IV.1' in self.df.columns:
+            # Same data-gap distinction as Implied Move: DTE/IV columns exist, but ATM IV
+            # itself came back missing, zero, or implausible.
+            breakdown.append({
+                "Aspect": "Probability Range (1σ / 2σ)",
+                "Status": "N/A ⚠️ IV unreliable",
+                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate probability range.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
+            })
+        # else: no expiration date supplied at all (e.g. CSV-loaded chain) - feature not
+        # applicable, skip silently
+
+        # Rule 10: IV vs Realized Volatility - a substitute for IV Rank/Percentile, which
         # would need daily IV history yfinance doesn't provide (see get_realized_volatility).
         atm_iv = self._get_atm_iv()
         if atm_iv is not None and self.realized_vol is not None and self.realized_vol > 0:
@@ -702,7 +847,7 @@ class OptionContext:
             })
         # else: no IV columns at all (e.g. CSV-loaded chain) - feature not applicable, skip silently
 
-        # Rule 9: Liquidity - average bid/ask spread (% of midpoint) across the displayed
+        # Rule 11: Liquidity - average bid/ask spread (% of midpoint) across the displayed
         # table. Guarded: CSV-loaded chains (filepath= in main()) may not have Bid/Ask.
         has_bidask_cols = {'Bid', 'Ask', 'Bid.1', 'Ask.1'}.issubset(self.df.columns)
         avg_spread_pct = self.calculate_avg_spread_pct() if has_bidask_cols else None
@@ -1174,11 +1319,13 @@ def calls_puts_side_by_side_distance_from_strike(
     int_cols = [c for c in ('Volume', 'Volume.1', 'Open Interest', 'Open Interest.1') if c in display_df.columns]
     if int_cols:
         df_context.styled_df = df_context.styled_df.format({c: '{:,.0f}' for c in int_cols}, subset=int_cols)
-    # IV is a fraction (e.g. 0.35); display as a percentage. Guarded since CSV-loaded
-    # chains (the filepath= path in main()) may not have IV columns at all.
+    # IV is a fraction (e.g. 0.35); display as a percentage. 2 decimal places (not 1) so
+    # genuinely small-but-real IV readings (e.g. 0.3%) aren't visually indistinguishable
+    # from the 0.0% placeholder/broken values _iv_is_plausible() filters out. Guarded
+    # since CSV-loaded chains (the filepath= path in main()) may not have IV columns at all.
     iv_cols = [c for c in ('IV', 'IV.1') if c in display_df.columns]
     if iv_cols:
-        df_context.styled_df = df_context.styled_df.format({c: '{:.1%}' for c in iv_cols}, subset=iv_cols)
+        df_context.styled_df = df_context.styled_df.format({c: '{:.2%}' for c in iv_cols}, subset=iv_cols)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
     return df_context

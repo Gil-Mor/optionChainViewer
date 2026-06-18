@@ -29,6 +29,20 @@ _MIN_STRIKES_WITH_OI = 3
 _NEAR_ATM_WINDOW = 10
 _NEAR_ATM_MIN_COVERAGE = 0.8
 
+# No real tradable option prices at single-digit-basis-point IV - a reading below this
+# is a placeholder/broken value from yfinance (common on illiquid/far-dated chains,
+# alongside the OI gap above), not a genuinely "ultra calm" market.
+_MIN_PLAUSIBLE_IV = 0.01
+
+# IV this far below the underlying's own trailing Realized Volatility is implausible:
+# forward-looking implied vol almost always carries some risk premium over backward-
+# looking realized vol, even right after a vol-crushing event. Falling below this
+# fraction of Realized Vol is a stronger sign of broken IV data than of a genuinely
+# "cheap" market - deliberately well under the 0.85 threshold where Rule 8 (IV vs
+# Realized Vol) starts calling things "Cheap Relative to Realized Vol", so real (if
+# unusual) cheap-vol readings between this floor and 0.85 still come through normally.
+_MIN_IV_TO_REALIZED_VOL_RATIO = 0.25
+
 
 class OptionContext:
     def __init__(self,
@@ -217,12 +231,28 @@ class OptionContext:
         payouts = [total_payout(p) for p in strikes]
         return float(strikes[payouts.index(min(payouts))])
 
+    def _iv_is_plausible(self, iv: float) -> bool:
+        """True when iv looks like a real market quote rather than placeholder/broken
+        data - see _MIN_PLAUSIBLE_IV and _MIN_IV_TO_REALIZED_VOL_RATIO. The Realized
+        Vol cross-check is skipped if realized_vol isn't available (e.g. yfinance
+        history fetch failed), falling back to the absolute floor alone.
+        """
+        if pd.isna(iv) or not math.isfinite(iv) or iv <= 0:
+            return False
+        if iv < _MIN_PLAUSIBLE_IV:
+            return False
+        if self.realized_vol is not None and self.realized_vol > 0:
+            if iv / self.realized_vol < _MIN_IV_TO_REALIZED_VOL_RATIO:
+                return False
+        return True
+
     def _get_atm_iv(self) -> float | None:
         """Average of call/put IV at the ATM strike, or whichever side is available.
 
         Reads from self.df (the displayed table), consistent with how get_total_stats()
         and the IV skew rule already scale against the displayed chain rather than
-        original_df. Returns None if IV columns are absent or the ATM row's IV is unusable.
+        original_df. Returns None if IV columns are absent or the ATM row's IV is
+        unusable or implausible (see _iv_is_plausible).
         """
         if 'IV' not in self.df.columns or 'IV.1' not in self.df.columns:
             return None
@@ -233,8 +263,8 @@ class OptionContext:
 
         call_iv = atm_row['IV'].iloc[0]
         put_iv = atm_row['IV.1'].iloc[0]
-        call_valid = pd.notna(call_iv) and math.isfinite(call_iv) and call_iv > 0
-        put_valid = pd.notna(put_iv) and math.isfinite(put_iv) and put_iv > 0
+        call_valid = self._iv_is_plausible(call_iv)
+        put_valid = self._iv_is_plausible(put_iv)
 
         if call_valid and put_valid:
             return (call_iv + put_iv) / 2
@@ -559,7 +589,7 @@ class OptionContext:
             otm_call_iv = self.otm_calls['IV'].mean() if not self.otm_calls.empty else float('nan')
             otm_put_iv = self.otm_puts['IV.1'].mean() if not self.otm_puts.empty else float('nan')
 
-            if pd.notna(otm_call_iv) and pd.notna(otm_put_iv) and otm_call_iv > 0:
+            if self._iv_is_plausible(otm_call_iv) and self._iv_is_plausible(otm_put_iv):
                 iv_skew_ratio = otm_put_iv / otm_call_iv
 
                 if iv_skew_ratio > 1.3:
@@ -592,9 +622,9 @@ class OptionContext:
             else:
                 breakdown.append({
                     "Aspect": "IV Skew (OTM Put vs Call)",
-                    "Status": "N/A ⚠️ IV unavailable",
-                    "Logic": "OTM Call/Put IV is missing or zero for every OTM strike in this chain - cannot compute skew.",
-                    "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without usable IV data."
+                    "Status": "N/A ⚠️ IV unreliable",
+                    "Logic": "OTM Call/Put IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot compute skew.",
+                    "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
                 })
         # else: IV columns absent entirely (e.g. CSV-loaded chain) - feature not applicable, skip silently
 
@@ -616,13 +646,13 @@ class OptionContext:
             })
         elif self.dte is not None and self.dte > 0 and 'IV' in self.df.columns and 'IV.1' in self.df.columns:
             # DTE and IV columns are both available, so implied_move failed only because
-            # ATM IV itself was missing/zero - a data gap worth flagging, not a feature
-            # that's simply inapplicable to this chain.
+            # ATM IV itself was missing, zero, or implausible - a data gap worth flagging,
+            # not a feature that's simply inapplicable to this chain.
             breakdown.append({
                 "Aspect": "Implied Move (to Expiration)",
-                "Status": "N/A ⚠️ IV unavailable",
-                "Logic": "ATM IV is missing/zero for this chain - cannot estimate implied move.",
-                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without usable IV data."
+                "Status": "N/A ⚠️ IV unreliable",
+                "Logic": "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain - cannot estimate implied move.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable IV data."
             })
         # else: no expiration date or no IV columns at all (e.g. CSV-loaded chain) - feature
         # not applicable, skip silently
@@ -658,17 +688,17 @@ class OptionContext:
             })
         elif 'IV' in self.df.columns and 'IV.1' in self.df.columns:
             # IV columns exist structurally, so the guard above failed because ATM IV or
-            # Realized Vol came back missing/zero - a data gap, not a feature that's simply
-            # inapplicable to this chain.
+            # Realized Vol came back missing, zero, or implausible - a data gap, not a
+            # feature that's simply inapplicable to this chain.
             if atm_iv is None:
-                reason = "ATM IV is missing/zero for this chain"
+                reason = "ATM IV is missing, zero, or implausibly low (e.g. far below Realized Vol) for this chain"
             else:
                 reason = "Realized Volatility could not be calculated (e.g. insufficient price history)"
             breakdown.append({
                 "Aspect": "IV vs Realized Vol (IVP Proxy)",
-                "Status": "N/A ⚠️ Data unavailable",
+                "Status": "N/A ⚠️ Data unreliable",
                 "Logic": f"{reason} - cannot compare IV to realized volatility.",
-                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without both values."
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without both reliable values."
             })
         # else: no IV columns at all (e.g. CSV-loaded chain) - feature not applicable, skip silently
 

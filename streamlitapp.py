@@ -70,8 +70,17 @@ def get_available_dates(ticker_symbol):
 
 DEFAULT_TICKER = 'NVDA'
 
+qp_ticker = st.query_params.get('ticker')
+qp_exp = st.query_params.get('exp')
+
 if 'ticker' not in st.session_state:
-    st.session_state['ticker'] = DEFAULT_TICKER
+    seeded_ticker = DEFAULT_TICKER
+    if qp_ticker:
+        if yfi_module.search_ticker(qp_ticker.strip()):
+            seeded_ticker = qp_ticker.strip()
+        else:
+            st.warning(f"Ticker from URL not found: {qp_ticker}")
+    st.session_state['ticker'] = seeded_ticker
 if 'use_ticker_or_name_query' not in st.session_state:
     st.session_state['use_ticker_or_name_query'] = 'ticker_query'
 if 'last_ticker' not in st.session_state:
@@ -132,7 +141,15 @@ with search_col1:
         st.warning(f"No options data found for ticker: {st.session_state['ticker']}")
         st.session_state['ticker_ready'] = False
 
-    exp_date = st.selectbox("Expiration Date", options=available_dates, index=0, help="Select an expiration date to view its option chain.")
+    if 'exp_date_select' not in st.session_state and qp_exp and qp_exp in available_dates:
+        st.session_state['exp_date_select'] = qp_exp
+
+    exp_date = st.selectbox("Expiration Date", options=available_dates, key='exp_date_select', help="Select an expiration date to view its option chain.")
+
+if st.session_state['ticker_ready'] and st.session_state.get('ticker'):
+    st.query_params['ticker'] = st.session_state['ticker']
+    if exp_date:
+        st.query_params['exp'] = exp_date
 
 with st.sidebar:
     st.header("Chain View Settings")

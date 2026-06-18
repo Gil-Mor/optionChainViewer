@@ -10,6 +10,26 @@ def readcsv(file_path: str) -> pd.DataFrame:
     return df
 
 
+# Minimum number of distinct strikes that must carry nonzero Open Interest before an
+# OI-driven computation (P/C ratio, Max Pain, OI walls, ...) is trusted. A sum > 0 isn't
+# enough: a handful of stray nonzero values - e.g. stale OI surviving on one or two deep
+# ITM/OTM contracts from an old position, far from where any real trading is happening -
+# makes the sum nonzero while the result still collapses onto wherever that handful sits.
+# That's the same degenerate failure as an all-zero column, just disguised.
+_MIN_STRIKES_WITH_OI = 3
+
+# A pure strike-count check can still be fooled by stray OI that's real-looking in count
+# but nowhere near the money (e.g. 3+ deep OTM strikes with leftover OI from old hedges,
+# while every strike that actually matters is empty). Real OI for a liquid underlying
+# concentrates near the current price, so also require that most of the strikes closest
+# to current_price carry nonzero OI. Always measured against original_df (the full,
+# untrimmed chain with a stable Strike column) rather than the displayed self.df - using
+# a user-adjustable trim/flip view as the source of the window would make the check only
+# as strict as whatever the user happened to be looking at.
+_NEAR_ATM_WINDOW = 10
+_NEAR_ATM_MIN_COVERAGE = 0.8
+
+
 class OptionContext:
     def __init__(self,
         df: pd.DataFrame,
@@ -59,20 +79,80 @@ class OptionContext:
     def get_puts_strike_col_index(self) -> int:
         return self.df.columns.get_loc(self.puts_strike_col_name)
 
-    def _wall_strike(self, oi_col: str, vol_col: str, strike_col: str) -> tuple[float, bool]:
-        """Strike with the highest value in oi_col, falling back to vol_col when oi_col
-        is entirely zero (yfinance sometimes doesn't report Open Interest for an
-        expiration). With all-zero OI, idxmax()'s tie-break just returns the first row,
-        producing a meaningless "wall" at the edge of the displayed strike range rather
-        than reflecting any real positioning.
-
-        Returns (strike, used_volume_fallback).
+    def _oi_strike_coverage(self, *oi_series: pd.Series) -> int:
+        """Count of distinct strikes carrying nonzero Open Interest in any of the given
+        Series (calls, puts, or both - pass one or several, aligned by position).
         """
-        if self.df[oi_col].sum() == 0:
+        nonzero = oi_series[0] > 0
+        for series in oi_series[1:]:
+            nonzero = nonzero | (series > 0)
+        return int(nonzero.sum())
+
+    def _near_atm_oi_coverage_ok(self) -> bool:
+        """True when at least _NEAR_ATM_MIN_COVERAGE of the _NEAR_ATM_WINDOW strikes
+        closest to current_price carry nonzero Open Interest (either side). See
+        _NEAR_ATM_WINDOW for why this is checked against original_df.
+        """
+        nearest = self.original_df.assign(
+            _dist_from_price=(self.original_df["Strike"] - self.current_price).abs()
+        ).nsmallest(_NEAR_ATM_WINDOW, "_dist_from_price")
+
+        window = len(nearest)
+        if window == 0:
+            return False
+
+        covered = self._oi_strike_coverage(nearest["Open Interest"], nearest["Open Interest.1"])
+        return covered / window >= _NEAR_ATM_MIN_COVERAGE
+
+    def _oi_missing_reason(self, *oi_vol_pairs: tuple[str, pd.Series, pd.Series]) -> str | None:
+        """Returns why Open Interest should be distrusted for this scope, or None if it
+        looks reliable. Each pair is (label, oi_series, vol_series) for one side, e.g.
+        ("Call", self.df["Open Interest"], self.df["Volume"]) - pass one side or both.
+
+        Checks three independent signals, any of which is disqualifying:
+
+        1. Volume traded but OI reads 0 on that side. This is the clearest possible
+           sign of a yfinance data gap - real trades leave OI behind (even a day
+           stale), so Volume > 0 with OI == 0 isn't a real lack of positions. Checked
+           per side so one broken side (e.g. Put OI dead, Call OI fine) isn't hidden
+           by averaging with a side that's working.
+        2. Too few strikes (summed across all given sides) carry any nonzero OI at
+           all - a handful of stray values (e.g. leftover OI on one old deep ITM/OTM
+           contract) isn't enough to anchor a chain-wide computation. See
+           _MIN_STRIKES_WITH_OI.
+        3. The strikes nearest current_price are mostly empty of OI - real OI for a
+           liquid underlying concentrates near the money, so OI that only exists far
+           from it is more likely stale than a real signal. See _NEAR_ATM_WINDOW.
+        """
+        broken_sides = [label for label, oi, vol in oi_vol_pairs if oi.sum() == 0 and vol.sum() > 0]
+        if broken_sides:
+            sides = " and ".join(broken_sides)
+            return f"{sides} Open Interest reads 0 despite real Volume traded - a yfinance data gap, not a real lack of positions."
+
+        oi_series_list = [oi for _, oi, _ in oi_vol_pairs]
+        if self._oi_strike_coverage(*oi_series_list) < _MIN_STRIKES_WITH_OI:
+            return "Open Interest is missing/zero across this chain - too few strikes carry any to compute from."
+
+        if not self._near_atm_oi_coverage_ok():
+            return "What little Open Interest exists is concentrated far from the current price, not near the money - likely stale rather than a real signal."
+
+        return None
+
+    def _wall_strike(self, oi_col: str, vol_col: str, strike_col: str, label: str) -> tuple[float, str | None]:
+        """Strike with the highest value in oi_col, falling back to vol_col when oi_col
+        isn't trustworthy (see _oi_missing_reason). Below that bar, idxmax()'s tie-break
+        (or a result pinned to a stray/broken value) produces a "wall" that doesn't
+        reflect any real positioning.
+
+        Returns (strike, fallback_reason). fallback_reason is None if Open Interest was
+        used directly; otherwise it's why Volume was used instead.
+        """
+        reason = self._oi_missing_reason((label, self.df[oi_col], self.df[vol_col]))
+        if reason is not None:
             idx = self.df[vol_col].idxmax()
-            return float(self.df.loc[idx, strike_col]), True
+            return float(self.df.loc[idx, strike_col]), reason
         idx = self.df[oi_col].idxmax()
-        return float(self.df.loc[idx, strike_col]), False
+        return float(self.df.loc[idx, strike_col]), None
 
     def get_key_price_levels(self) -> dict[str, float]:
         """Returns key option-derived price levels (OI walls) for charting.
@@ -87,8 +167,8 @@ class OptionContext:
         OI can win the full-chain max but isn't a meaningful near-term level, and showing
         a different wall on the chart than in the TA table is just confusing.
         """
-        call_wall, _ = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name)
-        put_wall, _ = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name)
+        call_wall, _ = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name, "Call")
+        put_wall, _ = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
 
         return {
             "Resistance (Call Wall)": call_wall,
@@ -105,13 +185,26 @@ class OptionContext:
         strikes = pd.concat([self.df[self.calls_strike_col_name], self.df[self.puts_strike_col_name]])
         return float(strikes.min()), float(strikes.max())
 
-    def calculate_max_pain(self) -> float:
+    def calculate_max_pain(self) -> float | None:
         """Finds the strike at which total option holder payout is minimized.
 
         Computed from original_df (the full, unflipped chain) since trimming would
         ignore OI from dropped strikes, and flipping pairs calls/puts by distance
         from ATM rather than by actual strike.
+
+        Returns None if Open Interest across the full chain isn't trustworthy (see
+        _oi_missing_reason) - otherwise the payout minimization can degenerate onto
+        whichever handful of strikes (even just one, e.g. stale leftover OI on a single
+        deep ITM/OTM contract) happens to hold the only nonzero/believable values,
+        producing a strike nowhere near a meaningful Max Pain level.
         """
+        oi_reason = self._oi_missing_reason(
+            ("Call", self.original_df["Open Interest"], self.original_df["Volume"]),
+            ("Put", self.original_df["Open Interest.1"], self.original_df["Volume.1"]),
+        )
+        if oi_reason is not None:
+            return None
+
         strikes = self.original_df["Strike"].tolist()
         call_oi = self.original_df["Open Interest"].tolist()
         put_oi = self.original_df["Open Interest.1"].tolist()
@@ -290,102 +383,136 @@ class OptionContext:
         breakdown = []
 
         # Rule 1: Total Put/Call Open Interest Ratio (Overall Balance)
-        pc_ratio = self.total_puts_open_interest_sum / self.total_calls_open_interest_sum if self.total_calls_open_interest_sum > 0 else 1.0
-
-        if pc_ratio < 0.5:
-            status = "Strong Bullish Skew"
-            rule_ref = "P/C Ratio < 0.5"
-            mm_inst = "Market Makers (MMs) are likely net short calls. If price rallies, MMs must buy shares to hedge, potentially fueling a 'gamma squeeze'. Retail is heavily long calls."
-        elif pc_ratio < 0.8:
-            status = "Moderate Bullish Skew"
-            rule_ref = "0.5 <= P/C Ratio < 0.8"
-            mm_inst = "Positive sentiment. Institutions may be selling calls for income. Retail sentiment is optimistic."
-        elif pc_ratio <= 1.2:
-            status = "Balanced Market"
-            rule_ref = "0.8 <= P/C Ratio <= 1.2"
-            mm_inst = "Market is in equilibrium. No clear dominance. MMs are neutral, collecting spreads. Retail and institutions are not showing directional consensus."
-        elif pc_ratio <= 2.0:
-            status = "Moderate Bearish Skew"
-            rule_ref = "1.2 < P/C Ratio <= 2.0"
-            mm_inst = "Hedging is dominant. Institutions are buying puts for protection. MMs are providing liquidity at higher premiums."
+        oi_reason = self._oi_missing_reason(
+            ("Call", self.df["Open Interest"], self.df["Volume"]),
+            ("Put", self.df["Open Interest.1"], self.df["Volume.1"]),
+        )
+        if oi_reason is not None:
+            breakdown.append({
+                "Aspect": "Overall Balance",
+                "Status": "N/A ⚠️ Open Interest unreliable",
+                "Logic": f"{oi_reason} Cannot compute Put/Call ratio.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
+            })
         else:
-            status = "Strong Bearish Skew"
-            rule_ref = "P/C Ratio > 2.0"
-            mm_inst = "Extreme fear or heavy hedging. MMs are net short puts and may sell underlying aggressively if price drops to stay delta-neutral (Gamma acceleration)."
+            pc_ratio = self.total_puts_open_interest_sum / self.total_calls_open_interest_sum if self.total_calls_open_interest_sum > 0 else float('inf')
 
-        breakdown.append({
-            "Aspect": "Overall Balance",
-            "Status": status,
-            "Logic": f"Rule: {rule_ref} (Actual: {pc_ratio:.2f})",
-            "Market Implication (MMs/Institutions vs Retail)": mm_inst
-        })
+            if pc_ratio < 0.5:
+                status = "Strong Bullish Skew"
+                rule_ref = "P/C Ratio < 0.5"
+                mm_inst = "Market Makers (MMs) are likely net short calls. If price rallies, MMs must buy shares to hedge, potentially fueling a 'gamma squeeze'. Retail is heavily long calls."
+            elif pc_ratio < 0.8:
+                status = "Moderate Bullish Skew"
+                rule_ref = "0.5 <= P/C Ratio < 0.8"
+                mm_inst = "Positive sentiment. Institutions may be selling calls for income. Retail sentiment is optimistic."
+            elif pc_ratio <= 1.2:
+                status = "Balanced Market"
+                rule_ref = "0.8 <= P/C Ratio <= 1.2"
+                mm_inst = "Market is in equilibrium. No clear dominance. MMs are neutral, collecting spreads. Retail and institutions are not showing directional consensus."
+            elif pc_ratio <= 2.0:
+                status = "Moderate Bearish Skew"
+                rule_ref = "1.2 < P/C Ratio <= 2.0"
+                mm_inst = "Hedging is dominant. Institutions are buying puts for protection. MMs are providing liquidity at higher premiums."
+            else:
+                status = "Strong Bearish Skew"
+                rule_ref = "P/C Ratio > 2.0"
+                mm_inst = "Extreme fear or heavy hedging. MMs are net short puts and may sell underlying aggressively if price drops to stay delta-neutral (Gamma acceleration)."
+
+            breakdown.append({
+                "Aspect": "Overall Balance",
+                "Status": status,
+                "Logic": f"Rule: {rule_ref} (Actual: {pc_ratio:.2f})",
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
 
         # Rule 2: OTM Distribution (Speculative Skew)
         otm_call_oi = self.otm_calls_open_interest_sum
         otm_put_oi = self.otm_puts_open_interest_sum
-        otm_ratio = otm_call_oi / otm_put_oi if otm_put_oi > 0 else 1.0
 
-        if otm_ratio > 2.0:
-            status = "Strong OTM Call Skew (Lotto Bias)"
-            mm_inst = "Retail is buying cheap 'lottery ticket' calls. Institutions are likely the sellers (smart money), betting against extreme moves."
-        elif otm_ratio > 1.2:
-            status = "Moderate OTM Call Skew"
-            mm_inst = "Speculative upside interest outweighs downside hedging. Market participants are positioning for a breakout."
-        elif 0.8 <= otm_ratio <= 1.2:
-            status = "Balanced OTM Distribution"
-            mm_inst = "Symmetric positioning. Market expects standard volatility in either direction. No extreme greed or fear."
-        elif otm_ratio >= 0.5:
-            status = "Moderate OTM Put Skew"
-            mm_inst = "Elevated fear. Protective puts are being accumulated by institutions to hedge portfolios."
+        otm_oi_reason = self._oi_missing_reason(
+            ("Call", self.otm_calls["Open Interest"], self.otm_calls["Volume"]),
+            ("Put", self.otm_puts["Open Interest.1"], self.otm_puts["Volume.1"]),
+        )
+        if otm_oi_reason is not None:
+            breakdown.append({
+                "Aspect": "OTM Skew (Speculation)",
+                "Status": "N/A ⚠️ Open Interest unreliable",
+                "Logic": f"{otm_oi_reason} Cannot compute OTM Call/Put ratio.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
+            })
         else:
-            status = "Strong OTM Put Skew (Panic/Hedging)"
-            mm_inst = "Institutions are loading up on crash protection. MMs are charging high premiums due to expansion in implied volatility."
+            otm_ratio = otm_call_oi / otm_put_oi if otm_put_oi > 0 else float('inf')
 
-        breakdown.append({
-            "Aspect": "OTM Skew (Speculation)",
-            "Status": status,
-            "Logic": f"OTM Call/Put Ratio: {otm_ratio:.2f}",
-            "Market Implication (MMs/Institutions vs Retail)": mm_inst
-        })
+            if otm_ratio > 2.0:
+                status = "Strong OTM Call Skew (Lotto Bias)"
+                mm_inst = "Retail is buying cheap 'lottery ticket' calls. Institutions are likely the sellers (smart money), betting against extreme moves."
+            elif otm_ratio > 1.2:
+                status = "Moderate OTM Call Skew"
+                mm_inst = "Speculative upside interest outweighs downside hedging. Market participants are positioning for a breakout."
+            elif 0.8 <= otm_ratio <= 1.2:
+                status = "Balanced OTM Distribution"
+                mm_inst = "Symmetric positioning. Market expects standard volatility in either direction. No extreme greed or fear."
+            elif otm_ratio >= 0.5:
+                status = "Moderate OTM Put Skew"
+                mm_inst = "Elevated fear. Protective puts are being accumulated by institutions to hedge portfolios."
+            else:
+                status = "Strong OTM Put Skew (Panic/Hedging)"
+                mm_inst = "Institutions are loading up on crash protection. MMs are charging high premiums due to expansion in implied volatility."
+
+            breakdown.append({
+                "Aspect": "OTM Skew (Speculation)",
+                "Status": status,
+                "Logic": f"OTM Call/Put Ratio: {otm_ratio:.2f}",
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
 
         # Rule 3: Volume vs Open Interest (Market Urgency)
         total_oi = self.total_calls_open_interest_sum + self.total_puts_open_interest_sum
         total_vol = self.total_calls_volume_sum + self.total_puts_volume_sum
-        vol_oi_ratio = total_vol / total_oi if total_oi > 0 else 0
 
-        if vol_oi_ratio > 0.5:
-            status = "High Urgency / Fresh Interest"
-            mm_inst = "Volume is very high relative to OI. This suggests large-scale 'opening' or 'closing' of positions. Institutions are likely repositioning for a major move or earnings. Retail is often 'chasing' the trend here."
-        elif vol_oi_ratio > 0.15:
-            status = "Healthy Turnover"
-            mm_inst = "Normal market participation. Positions are being rolled or adjusted, but there is no sign of a massive structural shift in sentiment."
+        urgency_oi_reason = self._oi_missing_reason(
+            ("Call", self.df["Open Interest"], self.df["Volume"]),
+            ("Put", self.df["Open Interest.1"], self.df["Volume.1"]),
+        )
+        if urgency_oi_reason is not None:
+            breakdown.append({
+                "Aspect": "Market Urgency (Vol/OI)",
+                "Status": "N/A ⚠️ Open Interest unreliable",
+                "Logic": f"{urgency_oi_reason} Cannot compute Vol/OI ratio. (Not the same as 'Low Conviction', which means OI exists but Volume is genuinely low against it.)",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
+            })
         else:
-            status = "Low Conviction / Consolidation"
-            mm_inst = "Volume is low relative to existing positions. Market participants are standing pat. Expect range-bound price action as the 'status quo' remains unchallenged."
+            vol_oi_ratio = total_vol / total_oi
 
-        breakdown.append({
-            "Aspect": "Market Urgency (Vol/OI)",
-            "Status": status,
-            "Logic": f"Vol/OI Ratio: {vol_oi_ratio:.2f}",
-            "Market Implication (MMs/Institutions vs Retail)": mm_inst
-        })
+            if vol_oi_ratio > 0.5:
+                status = "High Urgency / Fresh Interest"
+                mm_inst = "Volume is very high relative to OI. This suggests large-scale 'opening' or 'closing' of positions. Institutions are likely repositioning for a major move or earnings. Retail is often 'chasing' the trend here."
+            elif vol_oi_ratio > 0.15:
+                status = "Healthy Turnover"
+                mm_inst = "Normal market participation. Positions are being rolled or adjusted, but there is no sign of a massive structural shift in sentiment."
+            else:
+                status = "Low Conviction / Consolidation"
+                mm_inst = "Volume is low relative to existing positions. Market participants are standing pat. Expect range-bound price action as the 'status quo' remains unchallenged."
+
+            breakdown.append({
+                "Aspect": "Market Urgency (Vol/OI)",
+                "Status": status,
+                "Logic": f"Vol/OI Ratio: {vol_oi_ratio:.2f}",
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
 
         # Rule 4: Key Technical Levels (OI Walls)
-        # Find strikes with max Call OI and max Put OI (falls back to Volume if OI is
-        # entirely missing/zero for this chain - see _wall_strike)
-        call_wall, call_used_vol = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name)
-        put_wall, put_used_vol = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name)
-        oi_missing = call_used_vol or put_used_vol
+        # Find strikes with max Call OI and max Put OI (falls back to Volume per-side if
+        # that side's OI isn't trustworthy - see _wall_strike / _oi_missing_reason)
+        call_wall, call_fallback_reason = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name, "Call")
+        put_wall, put_fallback_reason = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
 
         status_text = f"Resistance: {call_wall} | Support: {put_wall}"
         logic_text = "Identifying strikes with the highest Open Interest concentration."
-        if oi_missing:
-            status_text += " ⚠️ Open Interest unavailable - using Volume instead"
-            logic_text = (
-                "Open Interest is missing/zero for every strike in this chain (a known yfinance gap, "
-                "common on illiquid or far-dated expirations) - falling back to highest Volume strikes "
-                "instead. Treat these levels as low-confidence."
-            )
+        if call_fallback_reason or put_fallback_reason:
+            status_text += " ⚠️ Open Interest unreliable - using Volume instead"
+            reasons = " ".join(r for r in (call_fallback_reason, put_fallback_reason) if r)
+            logic_text = f"{reasons} Falling back to highest Volume strikes instead. Treat these levels as low-confidence."
 
         breakdown.append({
             "Aspect": "Institutional 'Walls'",
@@ -400,18 +527,31 @@ class OptionContext:
 
         # Rule 5: Max Pain
         max_pain = self.calculate_max_pain()
-        distance_pct = ((self.current_price - max_pain) / max_pain * 100) if max_pain else 0.0
 
-        breakdown.append({
-            "Aspect": "Max Pain",
-            "Status": f"${max_pain:,.2f} ({distance_pct:+.1f}% from current price)",
-            "Logic": "Strike price minimizing total option payout across all calls and puts in the chain.",
-            "Market Implication (MMs/Institutions vs Retail)": (
-                f"MMs (typically net option sellers) benefit if price settles near ${max_pain:,.2f} at expiration, "
-                "since that minimizes what they owe option holders. Price often gravitates toward Max Pain as "
-                "expiration nears, though this effect weakens further out in time."
+        if max_pain is None:
+            max_pain_reason = self._oi_missing_reason(
+                ("Call", self.original_df["Open Interest"], self.original_df["Volume"]),
+                ("Put", self.original_df["Open Interest.1"], self.original_df["Volume.1"]),
             )
-        })
+            breakdown.append({
+                "Aspect": "Max Pain",
+                "Status": "N/A ⚠️ Open Interest unreliable",
+                "Logic": f"{max_pain_reason} Max Pain has no reliable Open Interest to weigh payouts by.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
+            })
+        else:
+            distance_pct = (self.current_price - max_pain) / max_pain * 100
+
+            breakdown.append({
+                "Aspect": "Max Pain",
+                "Status": f"${max_pain:,.2f} ({distance_pct:+.1f}% from current price)",
+                "Logic": "Strike price minimizing total option payout across all calls and puts in the chain.",
+                "Market Implication (MMs/Institutions vs Retail)": (
+                    f"MMs (typically net option sellers) benefit if price settles near ${max_pain:,.2f} at expiration, "
+                    "since that minimizes what they owe option holders. Price often gravitates toward Max Pain as "
+                    "expiration nears, though this effect weakens further out in time."
+                )
+            })
 
         # Rule 6: OTM IV Skew (Put vs Call) - the "volatility smirk".
         # Guarded: CSV-loaded chains (filepath= in main()) may not have IV columns.
@@ -449,6 +589,14 @@ class OptionContext:
                     "Logic": f"Rule: {rule_ref} (Avg OTM Call IV: {otm_call_iv:.1%}, Avg OTM Put IV: {otm_put_iv:.1%})",
                     "Market Implication (MMs/Institutions vs Retail)": mm_inst
                 })
+            else:
+                breakdown.append({
+                    "Aspect": "IV Skew (OTM Put vs Call)",
+                    "Status": "N/A ⚠️ IV unavailable",
+                    "Logic": "OTM Call/Put IV is missing or zero for every OTM strike in this chain - cannot compute skew.",
+                    "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without usable IV data."
+                })
+        # else: IV columns absent entirely (e.g. CSV-loaded chain) - feature not applicable, skip silently
 
         # Rule 7: Implied Move - the market's own forecast range for price by expiration.
         implied_move = self.calculate_implied_move()
@@ -466,6 +614,18 @@ class OptionContext:
                     "beyond this range by expiration would be a bigger surprise than current option prices expect."
                 )
             })
+        elif self.dte is not None and self.dte > 0 and 'IV' in self.df.columns and 'IV.1' in self.df.columns:
+            # DTE and IV columns are both available, so implied_move failed only because
+            # ATM IV itself was missing/zero - a data gap worth flagging, not a feature
+            # that's simply inapplicable to this chain.
+            breakdown.append({
+                "Aspect": "Implied Move (to Expiration)",
+                "Status": "N/A ⚠️ IV unavailable",
+                "Logic": "ATM IV is missing/zero for this chain - cannot estimate implied move.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without usable IV data."
+            })
+        # else: no expiration date or no IV columns at all (e.g. CSV-loaded chain) - feature
+        # not applicable, skip silently
 
         # Rule 8: IV vs Realized Volatility - a substitute for IV Rank/Percentile, which
         # would need daily IV history yfinance doesn't provide (see get_realized_volatility).
@@ -496,10 +656,26 @@ class OptionContext:
                 ),
                 "Market Implication (MMs/Institutions vs Retail)": mm_inst
             })
+        elif 'IV' in self.df.columns and 'IV.1' in self.df.columns:
+            # IV columns exist structurally, so the guard above failed because ATM IV or
+            # Realized Vol came back missing/zero - a data gap, not a feature that's simply
+            # inapplicable to this chain.
+            if atm_iv is None:
+                reason = "ATM IV is missing/zero for this chain"
+            else:
+                reason = "Realized Volatility could not be calculated (e.g. insufficient price history)"
+            breakdown.append({
+                "Aspect": "IV vs Realized Vol (IVP Proxy)",
+                "Status": "N/A ⚠️ Data unavailable",
+                "Logic": f"{reason} - cannot compare IV to realized volatility.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without both values."
+            })
+        # else: no IV columns at all (e.g. CSV-loaded chain) - feature not applicable, skip silently
 
         # Rule 9: Liquidity - average bid/ask spread (% of midpoint) across the displayed
         # table. Guarded: CSV-loaded chains (filepath= in main()) may not have Bid/Ask.
-        avg_spread_pct = self.calculate_avg_spread_pct()
+        has_bidask_cols = {'Bid', 'Ask', 'Bid.1', 'Ask.1'}.issubset(self.df.columns)
+        avg_spread_pct = self.calculate_avg_spread_pct() if has_bidask_cols else None
         if avg_spread_pct is not None:
             if avg_spread_pct < 5:
                 status = "Tight Spreads (Liquid)"
@@ -520,19 +696,30 @@ class OptionContext:
                 "Logic": "Average (Ask - Bid) / Midpoint across all displayed calls and puts.",
                 "Market Implication (MMs/Institutions vs Retail)": mm_inst
             })
+        elif has_bidask_cols:
+            breakdown.append({
+                "Aspect": "Liquidity (Bid/Ask Spread)",
+                "Status": "N/A ⚠️ Bid/Ask unavailable",
+                "Logic": "No usable Bid/Ask quotes (non-zero on both sides) anywhere in the displayed chain - cannot compute spread.",
+                "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without quote data."
+            })
+        # else: Bid/Ask columns absent entirely (e.g. CSV-loaded chain) - feature not
+        # applicable, skip silently
 
         return breakdown
 
     def get_technical_breakdown_styler(self) -> Styler:
         """Styled get_technical_breakdown() for display: rows flagged with a "⚠️" in
         their Status (e.g. the OI-walls rule falling back to Volume because Open
-        Interest is missing) are highlighted in red so the caveat isn't missed.
+        Interest is missing) are highlighted in orange so the caveat isn't missed.
+        Orange (not red) deliberately - these flag missing/unreliable data, not a
+        bearish or alarming market signal.
         """
         breakdown_df = pd.DataFrame(self.get_technical_breakdown())
 
         def highlight_warnings(row: pd.Series) -> list[str]:
             if "⚠️" in str(row["Status"]):
-                return ['color: #dc3545; font-weight: bold'] * len(row)
+                return ['color: #fd7e14; font-weight: bold'] * len(row)
             return [''] * len(row)
 
         return breakdown_df.style.hide(axis='index').apply(highlight_warnings, axis=1)

@@ -1092,9 +1092,12 @@ def duplicate_and_rename_strike(df: pd.DataFrame) -> pd.DataFrame:
 
     return df_result
 
-def highlight_cell(styler: Styler, col_name: str, val: float, color: str = "#3D7192") -> Styler:
+def highlight_cell(styler: Styler, col_name: str, val: float, color: str = "#3D7192", column_tint: str = "rgba(61, 113, 146, 0.18)") -> Styler:
     def style_atm_strike(s, target_val):
-        return [f'background-color: {color}; font-weight: bold' if val == target_val else None for val in s]
+        # ATM cell gets the strong highlight; the rest of the Strike column gets a
+        # gentle tint (lighter than the ATM color) so the column reads as a distinct
+        # axis at a glance, not just a single highlighted cell.
+        return [f'background-color: {color}; font-weight: bold' if v == target_val else f'background-color: {column_tint}' for v in s]
 
     styler = styler.apply(style_atm_strike, subset=[col_name], target_val=val)
 

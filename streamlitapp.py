@@ -333,8 +333,10 @@ with price_chart_col:
         )
 
     if period_label == "1D" and not is_market_open() and hist_df is not None and not hist_df.empty:
+        last_ts = hist_df.index[-1]
+        last_ts_et = last_ts.astimezone(zoneinfo.ZoneInfo("America/New_York")) if last_ts.tzinfo else last_ts
         info_line_parts.append(
-            f"<span style='color: grey;'>Data from: {format_relative_date(hist_df.index[-1])}</span>"
+            f"<span style='color: grey;'>{format_relative_date(last_ts)} at close ({last_ts_et.strftime('%H:%M')})</span>"
         )
 
     if info_line_parts:

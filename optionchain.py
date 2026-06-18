@@ -1442,6 +1442,7 @@ def build_price_chart(
     nor key_levels to size the axis from.
     """
     import altair as alt
+    import json
 
     key_levels = {label: price for label, price in (key_levels or {}).items() if price}
 
@@ -1473,19 +1474,35 @@ def build_price_chart(
         # market opens, when only one 5-minute bar exists yet) - add point markers so
         # there's still something visible. Skipped for denser series to avoid clutter.
         show_points = len(price_df) <= 3
+
+        # Bars that start a new calendar day (the first bar of each trading session) get
+        # a date tick label instead of a time-of-day one. For daily-or-coarser granularity
+        # (1mo/1y/max) every bar starts a new day, so every tick is dated, same as before.
+        # Listed as absolute epoch-ms instants (timezone-proof) since the ordinal x-axis
+        # below only ticks at real data points - unlike a continuous time scale, it can't
+        # rely on Vega auto-placing a tick at literal local midnight to detect day changes.
+        is_new_day = price_df["Date"].dt.normalize() != price_df["Date"].dt.normalize().shift(1)
+        day_start_epoch_ms = json.dumps([int(ts.timestamp() * 1000) for ts in price_df["Date"][is_new_day]])
+
         layers.append(
             alt.Chart(price_df).mark_line(
                 color=_PRICE_UP_COLOR if is_up else _PRICE_DOWN_COLOR, clip=True, point=show_points
             ).encode(
                 x=alt.X(
-                    "Date:T",
+                    # Ordinal, not temporal: a continuous time scale draws the gap between
+                    # each day's last bar and the next day's first bar (after-hours overnight,
+                    # or a whole weekend) as real elapsed time, which looks like a long flat/
+                    # diagonal "fake" move connecting the two points. Ordinal spaces every bar
+                    # evenly regardless of the real time gap, so only actual trading-session
+                    # data shapes the line.
+                    "Date:O",
                     title=None,
                     # Default tick labels use 12-hour AM/PM; force 24-hour time for
-                    # intraday ticks while leaving day/month/year ticks (always at
-                    # midnight, for the 1mo/1y/max periods) showing as plain dates.
+                    # intraday ticks while leaving the first bar of each day showing as a
+                    # plain date.
                     axis=alt.Axis(
                         labelExpr=(
-                            "(hours(datum.value) == 0 && minutes(datum.value) == 0) "
+                            f"indexof({day_start_epoch_ms}, time(datum.value)) >= 0 "
                             "? timeFormat(datum.value, '%b %d') "
                             ": timeFormat(datum.value, '%H:%M')"
                         )
@@ -1538,7 +1555,7 @@ def build_price_chart(
             # line's right end, hugging the chart's right edge, instead of a fixed pixel
             # offset that wouldn't track the actual plot width.
             levels_df = levels_df.assign(_AnchorDate=price_df["Date"].max())
-            text_x = alt.X("_AnchorDate:T")
+            text_x = alt.X("_AnchorDate:O")
             text_align, text_dx = "right", -4
         else:
             text_x = alt.value(2)

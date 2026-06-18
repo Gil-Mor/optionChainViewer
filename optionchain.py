@@ -160,6 +160,29 @@ class OptionContext:
             "high": self.current_price + move_dollar,
         }
 
+    def calculate_avg_spread_pct(self) -> float | None:
+        """Average bid/ask spread, as % of midpoint, across the displayed table.
+
+        A chain-wide liquidity read computed fresh from Bid/Ask (no separate stored
+        column) - rows with no real quote at all (bid and ask both 0) are excluded
+        rather than counted as 0% (which would misread as a perfectly tight market).
+        Returns None if Bid/Ask columns aren't present (e.g. CSV-loaded chain) or there's
+        no usable quote anywhere in the displayed table.
+        """
+        if not {'Bid', 'Ask', 'Bid.1', 'Ask.1'}.issubset(self.df.columns):
+            return None
+
+        calls_mid = (self.df['Ask'] + self.df['Bid']) / 2
+        calls_spread = ((self.df['Ask'] - self.df['Bid']) / calls_mid * 100).where(calls_mid > 0)
+
+        puts_mid = (self.df['Ask.1'] + self.df['Bid.1']) / 2
+        puts_spread = ((self.df['Ask.1'] - self.df['Bid.1']) / puts_mid * 100).where(puts_mid > 0)
+
+        combined = pd.concat([calls_spread, puts_spread]).dropna()
+        if combined.empty:
+            return None
+        return float(combined.mean())
+
     def get_total_stats(self) -> None:
         """Calculates OTM, ATM, and Total metrics for Calls and Puts."""
         self.otm_calls = self.df[(self.df[self.calls_strike_col_name] > self.current_price) & (self.df[self.calls_strike_col_name] != self.atm_strike)]
@@ -449,6 +472,30 @@ class OptionContext:
                     "True IV Rank/Percentile needs daily IV history yfinance doesn't expose; this compares "
                     "current IV to the stock's own recent actual volatility instead."
                 ),
+                "Market Implication (MMs/Institutions vs Retail)": mm_inst
+            })
+
+        # Rule 9: Liquidity - average bid/ask spread (% of midpoint) across the displayed
+        # table. Guarded: CSV-loaded chains (filepath= in main()) may not have Bid/Ask.
+        avg_spread_pct = self.calculate_avg_spread_pct()
+        if avg_spread_pct is not None:
+            if avg_spread_pct < 5:
+                status = "Tight Spreads (Liquid)"
+                mm_inst = "Market makers are competing tightly here - low cost to enter/exit positions. Typical of high-volume, popular names and near-term expirations."
+            elif avg_spread_pct < 15:
+                status = "Normal Liquidity"
+                mm_inst = "Reasonable cost to trade. Use limit orders near the midpoint rather than market orders to avoid overpaying the spread."
+            elif avg_spread_pct < 30:
+                status = "Wide Spreads (Reduced Liquidity)"
+                mm_inst = "MMs are demanding more compensation for taking the other side, likely due to low volume/open interest or distance from the front-month/ATM strikes. Expect meaningful slippage versus the midpoint - always use limit orders."
+            else:
+                status = "Very Wide (Illiquid)"
+                mm_inst = "Extremely thin two-sided interest. Entering or exiting a position here can cost a large share of the premium in spread alone - a strong signal these contracts are effectively untradeable at any size."
+
+            breakdown.append({
+                "Aspect": "Liquidity (Bid/Ask Spread)",
+                "Status": f"{status} (Avg: {avg_spread_pct:.1f}% of mid)",
+                "Logic": "Average (Ask - Bid) / Midpoint across all displayed calls and puts.",
                 "Market Implication (MMs/Institutions vs Retail)": mm_inst
             })
 
@@ -879,12 +926,6 @@ def calls_puts_side_by_side_distance_from_strike(
     iv_cols = [c for c in ('IV', 'IV.1') if c in display_df.columns]
     if iv_cols:
         df_context.styled_df = df_context.styled_df.format({c: '{:.1%}' for c in iv_cols}, subset=iv_cols)
-    # Spread % is already on a 0-100 scale (not a 0-1 fraction like IV), and is NaN (not 0)
-    # for strikes with no real bid/ask quote - na_rep keeps those showing "-" instead of a
-    # misleading "0.0%" that would look like a perfectly tight market.
-    spread_cols = [c for c in ('Spread %', 'Spread %.1') if c in display_df.columns]
-    if spread_cols:
-        df_context.styled_df = df_context.styled_df.format({c: '{:.1f}%' for c in spread_cols}, subset=spread_cols, na_rep="-")
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.calls_strike_col_name, df_context.atm_strike)
     df_context.styled_df = highlight_cell(df_context.styled_df, df_context.puts_strike_col_name, df_context.atm_strike)
     return df_context

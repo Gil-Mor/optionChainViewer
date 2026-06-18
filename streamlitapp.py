@@ -52,8 +52,6 @@ COLUMN_VISIBILITY_OPTIONS = [
     ("IV", "IV", True),
     ("Bid", "Bid", False),
     ("Ask", "Ask", False),
-    ("Spread %", "Spread %", True),
-    ("Breakeven", "Breakeven", False),
 ]
 
 popular_tickers = (

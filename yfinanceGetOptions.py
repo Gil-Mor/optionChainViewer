@@ -119,25 +119,6 @@ def get_options_chain_table(symbol: str,
         # Fill NaN values with 0 and format numbers
         result = result.fillna(0)
 
-        # Spread % (liquidity flag): NaN (not 0) when there's no real bid/ask quote at all,
-        # so it renders as "-" instead of a misleading "0.0%" that would look like a perfect
-        # market. Breakeven is just strike +/- premium, the standard definition.
-        calls_mid = (result['Ask'] + result['Bid']) / 2
-        result['Spread %'] = ((result['Ask'] - result['Bid']) / calls_mid * 100).where(calls_mid > 0)
-        result['Breakeven'] = result['Strike'] + result['Last Price']
-
-        puts_mid = (result['Ask.1'] + result['Bid.1']) / 2
-        result['Spread %.1'] = ((result['Ask.1'] - result['Bid.1']) / puts_mid * 100).where(puts_mid > 0)
-        result['Breakeven.1'] = result['Strike'] - result['Last Price.1']
-
-        # Re-center on Strike: calls-only columns to its left, puts-only to its right.
-        # optionchain.py's flip/split logic depends on this symmetry.
-        result = result[[
-            'Last Price', 'Change', '% Change', 'Volume', 'Open Interest', 'IV', 'Bid', 'Ask', 'Spread %', 'Breakeven',
-            'Strike',
-            'Last Price.1', 'Change.1', '% Change.1', 'Volume.1', 'Open Interest.1', 'IV.1', 'Bid.1', 'Ask.1', 'Spread %.1', 'Breakeven.1',
-        ]]
-
         return result, target_exp, exp_dates, retrieval_time
 
     except Exception as e:

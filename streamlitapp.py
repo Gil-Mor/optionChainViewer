@@ -286,15 +286,15 @@ if st.session_state['ticker_ready']:
             st.caption("No LLMs were harmed during this analysis")
 
 PRICE_CHART_PERIODS = {
-    "1 Day": "1d",
-    "5 Days": "5d",
-    "1 Month": "1mo",
-    "1 Year": "1y",
+    "1D": "1d",
+    "5D": "5d",
+    "M": "1mo",
+    "Y": "1y",
     "Max": "max",
 }
 
 if 'price_chart_period' not in st.session_state:
-    st.session_state['price_chart_period'] = "1 Day"
+    st.session_state['price_chart_period'] = "1D"
 
 @st.cache_data(show_spinner=False, ttl=300)
 def get_cached_price_history(ticker_symbol, period):
@@ -332,7 +332,7 @@ with price_chart_col:
             f"<span style='color: {change_color}; font-weight: bold;'>{period_label} change: {change_text}</span>"
         )
 
-    if period_label == "1 Day" and not is_market_open() and hist_df is not None and not hist_df.empty:
+    if period_label == "1D" and not is_market_open() and hist_df is not None and not hist_df.empty:
         info_line_parts.append(
             f"<span style='color: grey;'>Data from: {format_relative_date(hist_df.index[-1])}</span>"
         )

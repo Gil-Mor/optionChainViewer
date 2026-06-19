@@ -158,21 +158,40 @@ class OptionContext:
 
         return None
 
-    def _wall_strike(self, oi_col: str, vol_col: str, strike_col: str, label: str) -> tuple[float, str | None]:
-        """Strike with the highest value in oi_col, falling back to vol_col when oi_col
-        isn't trustworthy (see _oi_missing_reason). Below that bar, idxmax()'s tie-break
-        (or a result pinned to a stray/broken value) produces a "wall" that doesn't
-        reflect any real positioning.
+    def _get_otm_full_chain(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Returns (otm_calls, otm_puts) filtered from original_df (the full, untrimmed
+        chain), not self.df - shared by Rule 2 (OTM Skew) and Rule 7 (IV Skew) so a
+        user's trim setting narrows what's *displayed* without narrowing what either
+        rule computes over.
+        """
+        otm_calls_full = self.original_df[
+            (self.original_df["Strike"] > self.current_price) & (self.original_df["Strike"] != self.atm_strike)
+        ]
+        otm_puts_full = self.original_df[
+            (self.original_df["Strike"] < self.current_price) & (self.original_df["Strike"] != self.atm_strike)
+        ]
+        return otm_calls_full, otm_puts_full
+
+    def _wall_strike(self, df: pd.DataFrame, oi_col: str, vol_col: str, strike_col: str, label: str) -> tuple[float, str | None]:
+        """Strike with the highest value in oi_col within df, falling back to vol_col
+        when oi_col isn't trustworthy (see _oi_missing_reason). Below that bar,
+        idxmax()'s tie-break (or a result pinned to a stray/broken value) produces a
+        "wall" that doesn't reflect any real positioning.
+
+        df is original_df (the full, untrimmed chain) for both the TA breakdown's
+        Institutional Walls rule and the price chart's overlay - see those callers for
+        why, and get_strike_range()/the trim-disclaimer at the Walls rule's call site
+        for how a wall outside the user's displayed range is flagged.
 
         Returns (strike, fallback_reason). fallback_reason is None if Open Interest was
         used directly; otherwise it's why Volume was used instead.
         """
-        reason = self._oi_missing_reason((label, self.df[oi_col], self.df[vol_col]))
+        reason = self._oi_missing_reason((label, df[oi_col], df[vol_col]))
         if reason is not None:
-            idx = self.df[vol_col].idxmax()
-            return float(self.df.loc[idx, strike_col]), reason
-        idx = self.df[oi_col].idxmax()
-        return float(self.df.loc[idx, strike_col]), None
+            idx = df[vol_col].idxmax()
+            return float(df.loc[idx, strike_col]), reason
+        idx = df[oi_col].idxmax()
+        return float(df.loc[idx, strike_col]), None
 
     def get_key_price_levels(self) -> dict[str, float]:
         """Returns key option-derived price levels (OI walls) for charting.
@@ -181,14 +200,15 @@ class OptionContext:
         Max Pain often lands on the same strike as ATM (see calculate_max_pain) - both made
         the chart's line labels overlap without adding information beyond the walls.
 
-        Computed from self.df (the displayed/trimmed chain) to match the "Institutional
+        Computed from original_df (the full, untrimmed chain) to match the "Institutional
         Walls" rule in get_technical_breakdown() - both must agree on the same Resistance/
-        Support numbers. Deliberately NOT original_df: a deep-OTM strike with old, large
-        OI can win the full-chain max but isn't a meaningful near-term level, and showing
-        a different wall on the chart than in the TA table is just confusing.
+        Support numbers. A wall can fall outside the chart's plotted strike range (see
+        get_strike_range) when it sits on a strike the user has trimmed out of view; the
+        Walls rule's text carries a disclaimer for that case, the chart simply won't show
+        a line for it.
         """
-        call_wall, _ = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name, "Call")
-        put_wall, _ = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
+        call_wall, _ = self._wall_strike(self.original_df, "Open Interest", "Volume", self.calls_strike_col_name, "Call")
+        put_wall, _ = self._wall_strike(self.original_df, "Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
 
         return {
             "Resistance (Call Wall)": call_wall,
@@ -511,9 +531,15 @@ class OptionContext:
         breakdown = []
 
         # Rule 1: Total Put/Call Open Interest Ratio (Overall Balance)
+        # Computed from original_df (the full, untrimmed chain), not self.df - same
+        # reasoning as calculate_max_pain()/Rule 7: a user's trim setting narrows what's
+        # *displayed*, but shouldn't narrow what this ratio is computed over and silently
+        # flip the read sentiment depending on an unrelated display setting.
+        total_calls_oi_full = self.original_df["Open Interest"].sum()
+        total_puts_oi_full = self.original_df["Open Interest.1"].sum()
         oi_reason = self._oi_missing_reason(
-            ("Call", self.df["Open Interest"], self.df["Volume"]),
-            ("Put", self.df["Open Interest.1"], self.df["Volume.1"]),
+            ("Call", self.original_df["Open Interest"], self.original_df["Volume"]),
+            ("Put", self.original_df["Open Interest.1"], self.original_df["Volume.1"]),
         )
         if oi_reason is not None:
             breakdown.append({
@@ -523,7 +549,7 @@ class OptionContext:
                 "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
             })
         else:
-            pc_ratio = self.total_puts_open_interest_sum / self.total_calls_open_interest_sum if self.total_calls_open_interest_sum > 0 else float('inf')
+            pc_ratio = total_puts_oi_full / total_calls_oi_full if total_calls_oi_full > 0 else float('inf')
 
             if pc_ratio < 0.5:
                 status = "Strong Bullish Skew"
@@ -554,12 +580,15 @@ class OptionContext:
             })
 
         # Rule 2: OTM Distribution (Speculative Skew)
-        otm_call_oi = self.otm_calls_open_interest_sum
-        otm_put_oi = self.otm_puts_open_interest_sum
+        # Computed from original_df (the full, untrimmed chain) via _get_otm_full_chain -
+        # see Rule 1 for why.
+        otm_calls_full, otm_puts_full = self._get_otm_full_chain()
+        otm_call_oi = otm_calls_full["Open Interest"].sum()
+        otm_put_oi = otm_puts_full["Open Interest.1"].sum()
 
         otm_oi_reason = self._oi_missing_reason(
-            ("Call", self.otm_calls["Open Interest"], self.otm_calls["Volume"]),
-            ("Put", self.otm_puts["Open Interest.1"], self.otm_puts["Volume.1"]),
+            ("Call", otm_calls_full["Open Interest"], otm_calls_full["Volume"]),
+            ("Put", otm_puts_full["Open Interest.1"], otm_puts_full["Volume.1"]),
         )
         if otm_oi_reason is not None:
             breakdown.append({
@@ -595,12 +624,13 @@ class OptionContext:
             })
 
         # Rule 3: Volume vs Open Interest (Market Urgency)
-        total_oi = self.total_calls_open_interest_sum + self.total_puts_open_interest_sum
-        total_vol = self.total_calls_volume_sum + self.total_puts_volume_sum
+        # Computed from original_df (the full, untrimmed chain) - see Rule 1 for why.
+        total_oi = total_calls_oi_full + total_puts_oi_full
+        total_vol = self.original_df["Volume"].sum() + self.original_df["Volume.1"].sum()
 
         urgency_oi_reason = self._oi_missing_reason(
-            ("Call", self.df["Open Interest"], self.df["Volume"]),
-            ("Put", self.df["Open Interest.1"], self.df["Volume.1"]),
+            ("Call", self.original_df["Open Interest"], self.original_df["Volume"]),
+            ("Put", self.original_df["Open Interest.1"], self.original_df["Volume.1"]),
         )
         if urgency_oi_reason is not None:
             breakdown.append({
@@ -630,10 +660,11 @@ class OptionContext:
             })
 
         # Rule 4: Key Technical Levels (OI Walls)
-        # Find strikes with max Call OI and max Put OI (falls back to Volume per-side if
-        # that side's OI isn't trustworthy - see _wall_strike / _oi_missing_reason)
-        call_wall, call_fallback_reason = self._wall_strike("Open Interest", "Volume", self.calls_strike_col_name, "Call")
-        put_wall, put_fallback_reason = self._wall_strike("Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
+        # Find strikes with max Call OI and max Put OI across original_df (the full,
+        # untrimmed chain) - same reasoning as Rule 1. Falls back to Volume per-side if
+        # that side's OI isn't trustworthy - see _wall_strike / _oi_missing_reason.
+        call_wall, call_fallback_reason = self._wall_strike(self.original_df, "Open Interest", "Volume", self.calls_strike_col_name, "Call")
+        put_wall, put_fallback_reason = self._wall_strike(self.original_df, "Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
 
         status_text = f"Resistance: {call_wall} | Support: {put_wall}"
         logic_text = "Identifying strikes with the highest Open Interest concentration."
@@ -641,6 +672,21 @@ class OptionContext:
             status_text += " ⚠️ Open Interest unreliable - using Volume instead"
             reasons = " ".join(r for r in (call_fallback_reason, put_fallback_reason) if r)
             logic_text = f"{reasons} Falling back to highest Volume strikes instead. Treat these levels as low-confidence."
+
+        # A wall computed from the full chain can land on a strike the user has trimmed
+        # out of the displayed table/chart - flag that explicitly rather than leaving
+        # someone unable to find "Resistance: 800.0" anywhere in what they're looking at.
+        displayed_low, displayed_high = self.get_strike_range()
+        out_of_range = []
+        if call_wall < displayed_low or call_wall > displayed_high:
+            out_of_range.append(f"Call Wall ({call_wall})")
+        if put_wall < displayed_low or put_wall > displayed_high:
+            out_of_range.append(f"Put Wall ({put_wall})")
+        if out_of_range:
+            logic_text += (
+                f" ⚠️ {' and '.join(out_of_range)} outside your displayed range "
+                f"({displayed_low:.2f}-{displayed_high:.2f}) - widen the trim to see it in the table/chart."
+            )
 
         breakdown.append({
             "Aspect": "Institutional 'Walls'",
@@ -735,17 +781,12 @@ class OptionContext:
 
         # Rule 7: OTM IV Skew (Put vs Call) - the "volatility smirk". Computed from
         # original_df (the full, untrimmed chain), not self.df - same reasoning as
-        # calculate_max_pain()/_wall_strike(): a user's trim setting narrows what's
+        # calculate_max_pain()/Rules 1-4: a user's trim setting narrows what's
         # *displayed*, but shouldn't narrow what this average is computed over and
         # silently make a real skew reading look implausible. Guarded: CSV-loaded
         # chains (filepath= in main()) may not have IV columns.
         if 'IV' in self.df.columns and 'IV.1' in self.df.columns:
-            otm_calls_full = self.original_df[
-                (self.original_df["Strike"] > self.current_price) & (self.original_df["Strike"] != self.atm_strike)
-            ]
-            otm_puts_full = self.original_df[
-                (self.original_df["Strike"] < self.current_price) & (self.original_df["Strike"] != self.atm_strike)
-            ]
+            otm_calls_full, otm_puts_full = self._get_otm_full_chain()
             otm_call_iv = otm_calls_full['IV'].mean() if not otm_calls_full.empty else float('nan')
             otm_put_iv = otm_puts_full['IV.1'].mean() if not otm_puts_full.empty else float('nan')
 

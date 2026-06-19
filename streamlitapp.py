@@ -12,8 +12,33 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
-st.title("Option Chain Viewer")
-st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
+GLOSSARY_MARKDOWN = """
+**The basics**
+
+- **Option Chain** — the full list of available Call and Put contracts for a stock at a given expiration date, organized by strike price.
+- **The Table** — Calls on the left, Puts on the right, **Strike** in the middle. Each row is one strike, so the call and put at the same strike sit side by side.
+- **Strike** — the price at which the contract lets you buy (Call) or sell (Put) the stock.
+- **Calls** — contracts that profit if the stock goes *up* past the strike.
+- **Puts** — contracts that profit if the stock goes *down* past the strike.
+- **Open Interest (OI)** — how many contracts at that strike are currently open. A rough gauge of how much money is parked there.
+- **Volume** — how many contracts at that strike traded *today*.
+- **IV (Implied Volatility)** — how much price movement the market is pricing in. Higher IV means options are pricier, expecting bigger swings.
+- **Change** — how much the contract's price moved today.
+
+**What the Technical Breakdown means by...**
+
+- **MMs (Market Makers)** — the firms on the other side of most trades. They don't bet on direction; they hedge to stay neutral, and that hedging can itself move the stock.
+- **Hedging** — MMs and institutions buying or selling shares or other options to offset risk from positions they've already taken, not a directional bet on the stock.
+- **Walls** — strikes with unusually large OI. They can act like price magnets or barriers, since MMs hedging that much exposure tend to defend or gravitate toward that level.
+"""
+
+title_col, help_col = st.columns([8, 1])
+with title_col:
+    st.title("Option Chain Viewer")
+    st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
+with help_col:
+    with st.popover("❓ Help", use_container_width=True):
+        st.markdown(GLOSSARY_MARKDOWN)
 
 def is_market_open():
     """Checks if US Markets (NYSE/NASDAQ) are open (9:30 AM - 4:00 PM ET)."""

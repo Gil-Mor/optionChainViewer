@@ -335,13 +335,15 @@ if st.session_state['ticker_ready']:
         st.subheader(f"Ticker: {st.session_state['ticker']}{display_name}")
 
         price_color = "#4798a5"
-        price_display = f"Current Price: {current_price:.2f}"
+        # Dollar signs must be escaped (\$) - st.markdown treats unescaped $...$ as inline
+        # LaTeX math, which mangles everything between two unescaped $ in this line.
+        price_display = f"Current Price: \\${current_price:.2f}"
         price_change_display = "unch"
         price_change_color = "grey"
         if price_change is not None and price_pct_change is not None:
             price_change_color = "green" if price_change >= 0 else "red"
-            sign = "+" if price_change > 0 else ""
-            price_change_display = f" {sign}{price_change:.2f} ({sign}{price_pct_change:.2f}%)"
+            sign = "+" if price_change > 0 else "-" if price_change < 0 else ""
+            price_change_display = f" {sign}\\${abs(price_change):.2f} ({sign}{abs(price_pct_change):.2f}%)"
 
         st.markdown(f"<span style='color: {price_color}; font-weight: bold; font-size: 1.2em;'>{price_display}</span><span style='color: {price_change_color}; font-weight: bold; font-size: 1.2em;'> | daily change: {price_change_display}</span>", unsafe_allow_html=True)
 
@@ -349,7 +351,10 @@ if st.session_state['ticker_ready']:
         dte_suffix = f" ({dte} day{'s' if dte != 1 else ''} away)" if dte is not None and dte >= 0 else ""
         st.write(f"Expiration Date: {res['expiration_date']}{dte_suffix}")
         if res.get('retrieval_time'):
-            st.caption(f"Data from: {res['retrieval_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+            retrieval_time = res['retrieval_time']
+            retrieval_et = retrieval_time.astimezone(zoneinfo.ZoneInfo("America/New_York")) if retrieval_time.tzinfo else retrieval_time
+            when_label = "as of" if is_market_open() else "close"
+            st.caption(f"Data from: {format_relative_date(retrieval_time)} {when_label} ({retrieval_et.strftime('%H:%M')} ET)")
         else:
             st.caption("No time data available.")
         if not is_market_open():

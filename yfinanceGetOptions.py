@@ -1,7 +1,7 @@
 import math
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 
 def search_ticker(symbol: str):
     try:
@@ -75,7 +75,10 @@ def get_options_chain_table(symbol: str,
         retrieval_time = None
         underlying_info = getattr(options_chain, 'underlying', {})
         if underlying_info and 'regularMarketTime' in underlying_info:
-            retrieval_time = datetime.fromtimestamp(underlying_info['regularMarketTime'])
+            # Keep this UTC-aware (rather than the naive local-time fromtimestamp()
+            # used elsewhere) so downstream ET conversion/formatting is correct
+            # regardless of the server's local timezone.
+            retrieval_time = datetime.fromtimestamp(underlying_info['regularMarketTime'], tz=timezone.utc)
 
         # yfinance already provides change and percentChange columns
         # Just clean up any NaN values

@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import yfinanceGetOptions
 
@@ -60,8 +60,8 @@ class TestGetOptionsChainRetrievalTime:
 
         assert retrieval_time is not None
         assert isinstance(retrieval_time, datetime)
-        # Match the behavior of datetime.fromtimestamp() used in the source
-        assert retrieval_time == datetime.fromtimestamp(ts)
+        # Match the behavior of datetime.fromtimestamp(ts, tz=timezone.utc) used in the source
+        assert retrieval_time == datetime.fromtimestamp(ts, tz=timezone.utc)
 
     @patch("yfinanceGetOptions.yf.Ticker")
     def test_no_time_data_missing_key(self, mock_ticker_cls):
@@ -112,10 +112,12 @@ class TestRetrievalTimeUI:
     @patch("yfinance.Ticker")
     @patch("yfinanceGetOptions.get_options_chain_table")
     def test_ui_displays_formatted_time(self, mock_get, mock_ticker, mock_main):
+        # Old, tz-naive date far enough in the past that format_relative_date always
+        # falls back to the absolute "dd.mm.yy" branch, regardless of when this runs.
         dt = datetime(2025, 1, 10, 16, 0, 0)
         self._setup_app_mocks(mock_get, mock_ticker, mock_main, ret_time=dt)
         at = AppTest.from_file("streamlitapp.py").run()
-        assert any(dt.strftime('%Y-%m-%d %H:%M:%S') in c.value for c in at.caption)
+        assert any("10.01.25" in c.value and "16:00 ET" in c.value for c in at.caption)
 
     @patch("optionchain.main")
     @patch("yfinance.Ticker")

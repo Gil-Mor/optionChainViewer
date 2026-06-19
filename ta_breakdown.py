@@ -292,7 +292,7 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
             "Market Implication (MMs/Institutions vs Retail)": "No conclusion can be drawn without reliable Open Interest data."
         })
     else:
-        distance_pct = (ctx.current_price - max_pain) / max_pain * 100
+        distance_pct = (max_pain - ctx.current_price) / ctx.current_price * 100
 
         breakdown.append({
             "Aspect": "Max Pain",

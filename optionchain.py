@@ -1475,6 +1475,15 @@ def build_price_chart(
         # there's still something visible. Skipped for denser series to avoid clutter.
         show_points = len(price_df) <= 3
 
+        # yfinance timestamps are tz-aware in the exchange's local time (America/New_York).
+        # Vega-Lite renders temporal values in the *browser's* local timezone by default, so
+        # without this every viewer outside US Eastern would see different clock times for
+        # the same bar. Convert to ET wall-clock digits, then relabel (not convert) those
+        # digits as UTC: this makes the embedded instant equal "ET digits read as UTC", so
+        # formatting with the UTC-based Vega functions below reproduces the original ET
+        # digits identically for every viewer, regardless of their own timezone.
+        price_df["Date"] = price_df["Date"].dt.tz_convert("America/New_York").dt.tz_localize(None).dt.tz_localize("UTC")
+
         # Bars that start a new calendar day (the first bar of each trading session) get
         # a date tick label instead of a time-of-day one. For daily-or-coarser granularity
         # (1mo/1y/max) every bar starts a new day, so every tick is dated, same as before.
@@ -1483,6 +1492,13 @@ def build_price_chart(
         # rely on Vega auto-placing a tick at literal local midnight to detect day changes.
         is_new_day = price_df["Date"].dt.normalize() != price_df["Date"].dt.normalize().shift(1)
         day_start_epoch_ms = json.dumps([int(ts.timestamp() * 1000) for ts in price_df["Date"][is_new_day]])
+        has_intraday_ticks = bool((~is_new_day).any())
+
+        # Precomputed ET-labeled tooltip text, rather than letting Vega-Lite format the
+        # temporal field itself, since that formatting also defaults to the browser's local
+        # timezone (the "relabel as UTC" trick above only covers the axis, which we format
+        # with explicit UTC-based Vega expressions).
+        price_df["DateLabel"] = price_df["Date"].dt.strftime("%b %d, %Y, %H:%M") + " ET"
 
         layers.append(
             alt.Chart(price_df).mark_line(
@@ -1496,21 +1512,23 @@ def build_price_chart(
                     # evenly regardless of the real time gap, so only actual trading-session
                     # data shapes the line.
                     "Date:O",
-                    title=None,
+                    title="Time (ET)" if has_intraday_ticks else None,
                     # Default tick labels use 12-hour AM/PM; force 24-hour time for
                     # intraday ticks while leaving the first bar of each day showing as a
-                    # plain date.
+                    # plain date. utcFormat (not timeFormat) reads the relabeled-as-UTC
+                    # field above as plain ET digits instead of re-shifting to the browser's
+                    # own timezone.
                     axis=alt.Axis(
                         labelExpr=(
                             f"indexof({day_start_epoch_ms}, time(datum.value)) >= 0 "
-                            "? timeFormat(datum.value, '%b %d') "
-                            ": timeFormat(datum.value, '%H:%M')"
+                            "? utcFormat(datum.value, '%b %d') "
+                            ": utcFormat(datum.value, '%H:%M')"
                         )
                     ),
                 ),
                 y=alt.Y("Close:Q", title="Price", scale=alt.Scale(domain=domain, zero=False)),
                 tooltip=[
-                    alt.Tooltip("Date:T", format="%b %d, %Y, %H:%M", title="Date"),
+                    alt.Tooltip("DateLabel:N", title="Date"),
                     alt.Tooltip("Close:Q", format=".2f", title="Close"),
                 ],
             )

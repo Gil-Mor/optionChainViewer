@@ -3,7 +3,7 @@ import optionchain
 import watchlist
 import yfinance as yf
 import yfinanceGetOptions as yfi_module
-from datetime import datetime
+from datetime import datetime, timedelta
 import zoneinfo
 
 st.set_page_config(
@@ -399,8 +399,12 @@ with price_chart_col:
     if period_label == "1D" and not is_market_open() and hist_df is not None and not hist_df.empty:
         last_ts = hist_df.index[-1]
         last_ts_et = last_ts.astimezone(zoneinfo.ZoneInfo("America/New_York")) if last_ts.tzinfo else last_ts
+        # The 1D chart's last bar is a 5-minute bucket labeled by its *start* time (e.g.
+        # 15:55), not the market's actual close (16:00) - add the bucket width so this
+        # reads as the real close time instead of looking "off by 5 minutes".
+        close_time_et = last_ts_et + timedelta(minutes=5)
         info_line_parts.append(
-            f"<span style='color: grey;'>{format_relative_date(last_ts)} at close ({last_ts_et.strftime('%H:%M')})</span>"
+            f"<span style='color: grey;'>{format_relative_date(last_ts)} at close ({close_time_et.strftime('%H:%M')} ET)</span>"
         )
 
     if info_line_parts:

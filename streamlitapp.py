@@ -35,7 +35,7 @@ GLOSSARY_MARKDOWN = """
 title_col, help_col = st.columns([8, 1])
 with title_col:
     st.title("Option Chain Viewer")
-    st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
+    st.caption("An option chain viewer with some visual aids to make Calls/Puts positioning easier to read.")
 with help_col:
     with st.popover("❓ Help", use_container_width=True):
         st.markdown(GLOSSARY_MARKDOWN)
@@ -452,4 +452,5 @@ with price_chart_col:
         )
 
 st.write("---")
+st.markdown("[Project Github page](https://github.com/Gil-Mor/optionChainViewer)")
 st.caption("🍪 This site uses cookies only for functional purposes, such as remembering your Watchlist. No marketing, analytics, or tracking cookies are used.")

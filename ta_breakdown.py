@@ -201,12 +201,48 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
     call_wall, call_fallback_reason = ctx._wall_strike(ctx.original_df, "Open Interest", "Volume", ctx.calls_strike_col_name, "Call")
     put_wall, put_fallback_reason = ctx._wall_strike(ctx.original_df, "Open Interest.1", "Volume.1", ctx.puts_strike_col_name, "Put")
 
-    status_text = f"Resistance: {call_wall} | Support: {put_wall}"
+    # Distance from current price, shown directly (matching Max Pain's existing "(+X%
+    # from current price)" format) rather than left for the reader to eyeball - a row-
+    # count like the trim radius below doesn't translate into "is this far/near" on its
+    # own since strike spacing isn't uniform across the chain.
+    call_wall_pct = (call_wall - ctx.current_price) / ctx.current_price * 100
+    put_wall_pct = (put_wall - ctx.current_price) / ctx.current_price * 100
+    status_text = f"Resistance: {call_wall} ({call_wall_pct:+.1f}%) | Support: {put_wall} ({put_wall_pct:+.1f}%)"
     logic_text = "Identifying strikes with the highest Open Interest concentration."
     if call_fallback_reason or put_fallback_reason:
         status_text += " ⚠️ Open Interest unreliable - using Volume instead"
         reasons = " ".join(r for r in (call_fallback_reason, put_fallback_reason) if r)
         logic_text = f"{reasons} Falling back to highest Volume strikes instead. Treat these levels as low-confidence."
+    else:
+        # Concentration sanity check: a wall is an idxmax() pick, so unlike the sum-based
+        # rules above (Overall Balance, Market Urgency - where one outlier strike is just
+        # diluted into the total), a single strike with implausibly large OI relative to
+        # the rest of the chain can single-handedly decide the "wall" outright. Flag it -
+        # this can be a real large institutional position, but is also a known failure
+        # mode for stale/erroneous OI data from yfinance, so it's worth a second look
+        # before treating the level as confirmed.
+        concentration_notes = []
+        if total_calls_oi_full > 0:
+            call_wall_oi = ctx.original_df.loc[ctx.original_df[ctx.calls_strike_col_name] == call_wall, "Open Interest"].iloc[0]
+            call_share = call_wall_oi / total_calls_oi_full
+            if call_share > 0.15:
+                concentration_notes.append(
+                    f"the Call Wall strike ({call_wall}) alone holds {call_share:.1%} of total Call Open Interest"
+                )
+        if total_puts_oi_full > 0:
+            put_wall_oi = ctx.original_df.loc[ctx.original_df[ctx.puts_strike_col_name] == put_wall, "Open Interest.1"].iloc[0]
+            put_share = put_wall_oi / total_puts_oi_full
+            if put_share > 0.15:
+                concentration_notes.append(
+                    f"the Put Wall strike ({put_wall}) alone holds {put_share:.1%} of total Put Open Interest"
+                )
+        if concentration_notes:
+            logic_text += (
+                f" ⚠️ Concentration risk: {' and '.join(concentration_notes)} across the entire chain - "
+                "unusually concentrated for a single strike. This can reflect a real large institutional "
+                "position, but is also a known failure mode for stale/erroneous OI data from yfinance. "
+                "Cross-check this level against another source before treating it as a confirmed wall."
+            )
 
     # A wall computed from the full chain can land on a strike the user has trimmed
     # out of the displayed table/chart - flag that explicitly, with the exact radius

@@ -390,7 +390,21 @@ if st.session_state['ticker_ready']:
         if 'technical_breakdown' in res:
             st.write("---")
             st.subheader("Technical Breakdown")
-            st.table(res['technical_breakdown'])
+            # Default st.table cell borders are too faint to track across columns on
+            # narrow/mobile viewports - darken them, scoped to this table only.
+            st.markdown(
+                """<style>
+                .st-key-ta_breakdown_table table,
+                .st-key-ta_breakdown_table th,
+                .st-key-ta_breakdown_table td {
+                    border: 1px solid rgba(128, 128, 128, 0.6) !important;
+                    border-collapse: collapse;
+                }
+                </style>""",
+                unsafe_allow_html=True,
+            )
+            with st.container(key="ta_breakdown_table"):
+                st.table(res['technical_breakdown'])
             st.caption("⚠️ Note: These observations are based on heuristic rules and do not constitute financial advice. E.g. a position could be a directional bet **OR position hedging**")
             st.caption("No LLMs were harmed during this analysis")
 

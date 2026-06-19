@@ -278,7 +278,7 @@ hidden_columns = [
     for name in (col_name, f"{col_name}.1")
 ]
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def get_cached_options_data(ticker_symbol, selected_exp):
     """Fetches raw data and price, cached by ticker and expiration."""
     import yfinanceGetOptions as yfi_module

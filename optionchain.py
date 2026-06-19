@@ -43,6 +43,19 @@ _MIN_PLAUSIBLE_IV = 0.01
 # unusual) cheap-vol readings between this floor and 0.85 still come through normally.
 _MIN_IV_TO_REALIZED_VOL_RATIO = 0.25
 
+# A strike qualifies as an OI "wall" once it holds at least this share of its side's
+# total OI (or Volume, on fallback) across original_df. Picking only the single max
+# strike is fragile to near-ties (a strike just barely behind the winner, but much
+# closer to the current price, would otherwise be invisible) and produces only one
+# level when the user wants to see several "what if price breaks this" reference
+# points. 10% sits below the existing concentration-risk bar (see ta_breakdown.py),
+# which is calibrated as "suspiciously dominant", not "worth showing at all".
+_WALL_OI_SHARE_THRESHOLD = 0.10
+
+# Cap on how many qualifying strikes are shown per side, so a long tail of strikes
+# each barely clearing _WALL_OI_SHARE_THRESHOLD doesn't clutter the chart/table.
+_MAX_WALLS_PER_SIDE = 3
+
 # Fixed approximation of the risk-free rate (~short-term T-bill yield). Not fetched
 # live - its effect on these probability estimates is small relative to ATM IV over
 # typical option DTE windows, same simplification tradeoff as using a single flat
@@ -172,28 +185,64 @@ class OptionContext:
         ]
         return otm_calls_full, otm_puts_full
 
-    def _wall_strike(self, df: pd.DataFrame, oi_col: str, vol_col: str, strike_col: str, label: str) -> tuple[float, str | None]:
-        """Strike with the highest value in oi_col within df, falling back to vol_col
-        when oi_col isn't trustworthy (see _oi_missing_reason). Below that bar,
-        idxmax()'s tie-break (or a result pinned to a stray/broken value) produces a
-        "wall" that doesn't reflect any real positioning.
+    def _wall_strikes(self, df: pd.DataFrame, oi_col: str, vol_col: str, strike_col: str, label: str) -> tuple[list[dict], str | None]:
+        """Strikes carrying a meaningful share of oi_col's total within df, falling
+        back to vol_col when oi_col isn't trustworthy (see _oi_missing_reason). A
+        single idxmax() pick is fragile to near-ties: a strike just barely behind the
+        "winner" but much closer to current_price would otherwise be invisible.
+
+        A strike qualifies once its share of the column's total reaches
+        _WALL_OI_SHARE_THRESHOLD. If none qualify (e.g. a flat distribution with no
+        standout strike), the single largest is kept anyway so the feature never goes
+        empty. When more than _MAX_WALLS_PER_SIDE qualify, the kept set is the top N
+        by a proximity-weighted score (share decayed by distance from current_price)
+        rather than raw share - otherwise a far strike with only a marginally higher
+        share than several closer ones would crowd them all out of the cap. Proximity
+        only affects this capping/ranking, never whether a strike qualifies at all.
 
         df is original_df (the full, untrimmed chain) for both the TA breakdown's
         Institutional Walls rule and the price chart's overlay - see those callers for
         why, and get_strike_range()/the trim-disclaimer at the Walls rule's call site
         for how a wall outside the user's displayed range is flagged.
 
-        Returns (strike, fallback_reason). fallback_reason is None if Open Interest was
-        used directly; otherwise it's why Volume was used instead.
+        Returns (walls, fallback_reason). walls is rank-ordered (most prominent
+        first), each entry {"strike": float, "share": float, "distance_pct": float}.
+        fallback_reason is None if Open Interest was used; otherwise it's why Volume
+        was used instead (one reason for the whole side, not per-wall).
         """
         reason = self._oi_missing_reason((label, df[oi_col], df[vol_col]))
-        if reason is not None:
-            idx = df[vol_col].idxmax()
-            return float(df.loc[idx, strike_col]), reason
-        idx = df[oi_col].idxmax()
-        return float(df.loc[idx, strike_col]), None
+        col = vol_col if reason is not None else oi_col
 
-    def get_key_price_levels(self) -> dict[str, float]:
+        total = df[col].sum()
+        if total <= 0:
+            return [], reason
+
+        shares = df[col] / total
+        qualifying = df.index[shares >= _WALL_OI_SHARE_THRESHOLD]
+        if len(qualifying) == 0:
+            qualifying = [df[col].idxmax()]
+
+        def distance_pct(strike: float) -> float:
+            return (strike - self.current_price) / self.current_price * 100
+
+        def score(idx) -> float:
+            # Mild decay so proximity only matters for ranking/capping, not whether a
+            # strike qualifies in the first place - see _MAX_WALLS_PER_SIDE.
+            d = abs(distance_pct(float(df.loc[idx, strike_col])))
+            return shares.loc[idx] / (1 + d / 50)
+
+        ranked = sorted(qualifying, key=score, reverse=True)[:_MAX_WALLS_PER_SIDE]
+
+        return [
+            {
+                "strike": float(df.loc[idx, strike_col]),
+                "share": float(shares.loc[idx]),
+                "distance_pct": distance_pct(float(df.loc[idx, strike_col])),
+            }
+            for idx in ranked
+        ], reason
+
+    def get_key_price_levels(self) -> dict[str, list[dict]]:
         """Returns key option-derived price levels (OI walls) for charting.
 
         Just Resistance/Support: ATM Strike sits right on top of the price line itself, and
@@ -204,15 +253,19 @@ class OptionContext:
         Walls" rule in get_technical_breakdown() - both must agree on the same Resistance/
         Support numbers. A wall can fall outside the chart's plotted strike range (see
         get_strike_range) when it sits on a strike the user has trimmed out of view; the
-        Walls rule's text carries a disclaimer for that case, the chart simply won't show
-        a line for it.
+        Walls rule's text carries a disclaimer for that case, the chart still draws a
+        (possibly clipped) line for it rather than hiding it - see build_price_chart.
+
+        Each side can now hold up to _MAX_WALLS_PER_SIDE entries (see _wall_strikes) -
+        the dict shape is {label: [{"strike", "share", "distance_pct"}, ...]}, list
+        rank-ordered most-prominent-first, rather than a single float per side.
         """
-        call_wall, _ = self._wall_strike(self.original_df, "Open Interest", "Volume", self.calls_strike_col_name, "Call")
-        put_wall, _ = self._wall_strike(self.original_df, "Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
+        call_walls, _ = self._wall_strikes(self.original_df, "Open Interest", "Volume", self.calls_strike_col_name, "Call")
+        put_walls, _ = self._wall_strikes(self.original_df, "Open Interest.1", "Volume.1", self.puts_strike_col_name, "Put")
 
         return {
-            "Resistance (Call Wall)": call_wall,
-            "Support (Put Wall)": put_wall,
+            "Resistance (Call Wall)": call_walls,
+            "Support (Put Wall)": put_walls,
         }
 
     def get_strike_range(self) -> tuple[float, float]:
@@ -532,7 +585,7 @@ class OptionContext:
         Narrative generation lives in ta_breakdown.py (kept separate since it's mostly
         text templates rather than chain mechanics) - this just delegates to it, passing
         self for the chain-derived data/math methods it calls back into (calculate_max_pain,
-        _wall_strike, _oi_missing_reason, etc., all of which stay here since some are also
+        _wall_strikes, _oi_missing_reason, etc., all of which stay here since some are also
         used outside the TA breakdown, e.g. by get_key_price_levels for the price chart).
         """
         import ta_breakdown
@@ -1003,27 +1056,30 @@ _PRICE_DOWN_COLOR = "#dc3545"
 
 def build_price_chart(
     history_df: pd.DataFrame,
-    key_levels: dict[str, float] | None = None,
+    key_levels: dict[str, list[dict]] | None = None,
     strike_range: tuple[float, float] | None = None,
 ):
     """Builds an Altair chart of historical close price with horizontal reference lines.
 
     Either input may be missing: history_df can be empty (no price data) and/or
     key_levels can be empty (no option data). Returns None if there's nothing to plot.
+    key_levels is {label: [{"strike", "share", "distance_pct"}, ...]} - up to
+    _MAX_WALLS_PER_SIDE entries per side (see get_key_price_levels/_wall_strikes), not
+    a single float per side.
 
-    The y-axis domain always covers the price series' own min/max for the selected period
-    (yfinance's OHLC history gives us the real trading range) PLUS every key_levels value,
-    so Resistance/Support are always visible rather than getting clipped off a tightly-zoomed
-    short-period chart. This is safe to do unconditionally because key_levels now comes from
-    the same trimmed/displayed chain as the "Institutional Walls" TA rule (see
-    get_key_price_levels), not the full chain - so it can no longer drag in a meaningless
-    far-OTM wall. strike_range is only a last-resort fallback when there's neither price data
-    nor key_levels to size the axis from.
+    The y-axis domain is driven by the price series' own min/max for the selected
+    period (yfinance's OHLC history gives us the real trading range) when available -
+    wall levels are NOT added to the domain in that case, so a wall far outside the
+    recent price range doesn't stretch the axis and flatten the real price action.
+    A wall outside that domain is clamped to the nearest edge before plotting (see
+    below) rather than left to mark_rule's clip=True - a shared y-scale fed any
+    out-of-domain data, even on a layer meant to just get visually clipped, can break
+    rendering for every layer sharing that scale. Only when there's no price history
+    at all do wall prices (then strike_range) become the domain source, so the
+    chart still has *some* sensible scale to draw against.
     """
     import altair as alt
     import json
-
-    key_levels = {label: price for label, price in (key_levels or {}).items() if price}
 
     layers = []
     domain_candidates = []
@@ -1035,11 +1091,19 @@ def build_price_chart(
         price_df = price_df.rename(columns={date_col: "Date"})
         domain_candidates += [price_df["Close"].min(), price_df["Close"].max()]
 
-    if key_levels:
-        domain_candidates += list(key_levels.values())
+    # Flatten {label: [wall, ...]} into one row per wall, dropping empty sides/strikes.
+    level_rows = [
+        {"Label": label, "Rank": rank, "Strike": w["strike"], "Share": w.get("share")}
+        for label, walls in (key_levels or {}).items()
+        for rank, w in enumerate(walls, start=1)
+        if w.get("strike")
+    ]
 
-    if not domain_candidates and strike_range:
-        domain_candidates += [strike_range[0], strike_range[1]]
+    if price_df is None:
+        if level_rows:
+            domain_candidates += [r["Strike"] for r in level_rows]
+        elif strike_range:
+            domain_candidates += [strike_range[0], strike_range[1]]
 
     domain = None
     if domain_candidates:
@@ -1113,37 +1177,73 @@ def build_price_chart(
             )
         )
 
-    if key_levels:
-        labels = list(key_levels.keys())
-        plot_prices = list(key_levels.values())
+    if level_rows:
+        plot_prices = [r["Strike"] for r in level_rows]
 
-        # Labels sit right next to their line, so when Resistance and Support are equal or
-        # nearly so they need real vertical room for the TEXT (not just a hairline gap
-        # between two dashed lines) or the two labels overlap each other. Nudge them apart
-        # by a chunk of the visible range; the tooltip/label text still reports the real,
-        # un-nudged price via a separate field.
-        if domain and len(plot_prices) == 2:
+        # Clamp into the domain rather than relying on mark_rule's clip=True to hide
+        # the out-of-domain portion: a shared y-scale with an explicit domain, fed
+        # underlying data (this field's values) that falls outside it, doesn't just
+        # clip the offending marks in practice - it can break the scale for every
+        # layer sharing the channel, including the price line, leaving the whole
+        # chart blank. Clamping keeps every plotted value within the scale's actual
+        # domain, so that failure mode never triggers; the line still visually reads
+        # as "pinned to this edge", and the tooltip/label text reports the true,
+        # un-clamped price via a separate field.
+        if domain:
+            plot_prices = [min(max(p, domain[0]), domain[1]) for p in plot_prices]
+
+        # Labels sit right next to their line, so two nearby walls need real vertical
+        # room for the TEXT (not just a hairline gap between dashed lines) or their
+        # labels overlap. Push overlapping prices apart (bottom to top, in price
+        # order) by a chunk of the visible range; the tooltip/label text still
+        # reports the real, un-nudged price via a separate field. Levels clamped to
+        # the same edge (see above) can still stack there - they're already flagged
+        # as out-of-range in the TA table, so this is a low-priority cosmetic gap,
+        # not a correctness issue.
+        if domain and len(plot_prices) > 1:
             min_gap = (domain[1] - domain[0]) * 0.08
-            if abs(plot_prices[0] - plot_prices[1]) < min_gap:
-                mid = (plot_prices[0] + plot_prices[1]) / 2
-                direction = 1 if plot_prices[0] >= plot_prices[1] else -1
-                plot_prices[0] = mid + direction * (min_gap / 2)
-                plot_prices[1] = mid - direction * (min_gap / 2)
+            order = sorted(range(len(plot_prices)), key=lambda i: plot_prices[i])
+            for prev_i, cur_i in zip(order, order[1:]):
+                if plot_prices[cur_i] - plot_prices[prev_i] < min_gap:
+                    plot_prices[cur_i] = plot_prices[prev_i] + min_gap
 
-        levels_df = pd.DataFrame({"Label": labels, "Price": plot_prices, "ActualPrice": list(key_levels.values())})
-        levels_df["Text"] = [f"{label}: ${price:,.2f}" for label, price in zip(labels, levels_df["ActualPrice"])]
+        levels_df = pd.DataFrame(level_rows)
+        levels_df["Price"] = plot_prices
+        # Rank 1 (most prominent wall per side) keeps the original full label; rank 2+
+        # gets an abbreviated "<Resistance/Support> #N" so the chart doesn't repeat
+        # "(Call Wall)"/"(Put Wall)" multiple times per side.
+        levels_df["Text"] = [
+            f"{row['Label']}: ${row['Strike']:,.2f}" if row["Rank"] == 1
+            else f"{row['Label'].split(' (')[0]} #{row['Rank']}: ${row['Strike']:,.2f}"
+            for row in level_rows
+        ]
+        # Most prominent wall per side at full opacity, each subsequent one fainter -
+        # visually de-emphasizes secondary levels without needing a distinct color per
+        # rank (color still just encodes side, via the existing 2-entry palette).
+        levels_df["Opacity"] = [max(1.0 - (row["Rank"] - 1) * 0.3, 0.35) for row in level_rows]
+
         color = alt.Color(
             "Label:N",
             scale=alt.Scale(domain=list(_KEY_LEVEL_COLORS.keys()), range=list(_KEY_LEVEL_COLORS.values())),
             legend=None,
         )
+        # scale=None: use the precomputed 0-1 values directly as opacity rather than
+        # mapping them through a Vega-Lite scale. With a scale, layered-chart "shared"
+        # resolution tries to build one Opacity scale across every layer - including
+        # the price line layer, which has no Opacity field at all - and ends up with
+        # an empty/infinite domain that breaks rendering for the whole chart (not just
+        # these marks), not merely these marks' opacity.
+        opacity = alt.Opacity("Opacity:Q", scale=None, legend=None)
         y = alt.Y("Price:Q", scale=alt.Scale(domain=domain, zero=False))
+        tooltip = [
+            alt.Tooltip("Label:N"),
+            alt.Tooltip("Strike:Q", format=".2f", title="Price"),
+            alt.Tooltip("Share:Q", format=".1%", title="Share of side OI/Vol"),
+        ]
 
         layers.append(
             alt.Chart(levels_df).mark_rule(strokeDash=[4, 4], clip=True).encode(
-                y=y,
-                color=color,
-                tooltip=[alt.Tooltip("Label:N"), alt.Tooltip("ActualPrice:Q", format=".2f", title="Price")],
+                y=y, color=color, opacity=opacity, tooltip=tooltip,
             )
         )
 
@@ -1166,6 +1266,7 @@ def build_price_chart(
                 y=y,
                 text="Text:N",
                 color=color,
+                opacity=opacity,
             )
         )
 

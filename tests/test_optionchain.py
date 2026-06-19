@@ -6,7 +6,9 @@ from optionchain import (
     calls_puts_side_by_side_distance_from_strike,
     get_atm_strike_from_current_price,
     readcsv,
+    build_price_chart,
 )
+import ta_breakdown
 
 # --- Helpers ---
 
@@ -427,3 +429,120 @@ class TestBarScalingModes:
         html3 = self._ctx("Relative to Full Chain").styled_df.to_html()
         html4 = self._ctx("Per Side (Each side's own peak)").styled_df.to_html()
         assert html3 != html4
+
+
+# --- Wall selection (_wall_strikes) ---
+
+class TestWallSelection:
+    def _call_walls(self, ctx):
+        return ctx._wall_strikes(ctx.original_df, "Open Interest", "Volume", ctx.calls_strike_col_name, "Call")
+
+    def _put_walls(self, ctx):
+        return ctx._wall_strikes(ctx.original_df, "Open Interest.1", "Volume.1", ctx.puts_strike_col_name, "Put")
+
+    def test_clear_single_winner(self):
+        # One strike (105) holds 99.2% of total Call OI - far above the 10% bar, and
+        # nothing else comes close - matches today's idxmax behavior as a regression check.
+        strikes = [95, 100, 105, 110, 115]
+        call_oi = [10, 10, 5000, 10, 10]
+        ctx = make_context(strikes, call_oi, [0] * 5, current_price=100.0)
+
+        walls, reason = self._call_walls(ctx)
+
+        assert reason is None
+        assert len(walls) == 1
+        assert walls[0]["strike"] == 105.0
+        assert walls[0]["share"] == pytest.approx(5000 / 5040, rel=1e-6)
+
+    def test_near_tie_produces_two_walls_closer_ranked_first(self):
+        # Strike 70 (far, OI=27522) and strike 130 (close, OI=27512) are within 10 OI
+        # of each other - both clear the 10% bar, so both should appear (unlike a
+        # single idxmax() pick, which would silently keep only 70 and hide 130).
+        # Despite 70 having marginally higher raw OI, 130's much smaller distance from
+        # the current price should rank it first.
+        strikes = [70, 100, 130, 135, 140]
+        put_oi = [27522, 100, 27512, 50, 50]
+        ctx = make_context(strikes, [0] * 5, put_oi, current_price=134.0)
+
+        walls, reason = self._put_walls(ctx)
+
+        assert reason is None
+        assert len(walls) == 2
+        assert [w["strike"] for w in walls] == [130.0, 70.0]
+        assert walls[0]["share"] > 0.10
+        assert walls[1]["share"] > 0.10
+
+    def test_long_tail_capped_at_max_walls_by_proximity_weighted_score(self):
+        # 6 strikes, all with equal Call OI (each individually clears the 10% bar) -
+        # with shares tied, ranking falls purely to proximity. Only the top 3 closest
+        # to current_price should be kept (_MAX_WALLS_PER_SIDE), in proximity order.
+        strikes = [100, 110, 120, 130, 140, 150]
+        call_oi = [100] * 6
+        ctx = make_context(strikes, call_oi, [0] * 6, current_price=119.0)
+
+        walls, reason = self._call_walls(ctx)
+
+        assert reason is None
+        assert len(walls) == 3
+        assert [w["strike"] for w in walls] == [120.0, 110.0, 130.0]
+
+    def test_oi_unreliable_falls_back_to_volume(self):
+        # Call OI is entirely zero despite real Call Volume - the data-gap signature
+        # _oi_missing_reason is built to catch. Walls should be selected from Volume
+        # instead, with a fallback reason populated.
+        strikes = [95, 100, 105, 110, 115]
+        call_vol = [10, 10, 5000, 10, 10]
+        ctx = make_context(strikes, [0] * 5, [0] * 5, current_price=100.0, call_vol=call_vol)
+
+        walls, reason = self._call_walls(ctx)
+
+        assert reason is not None
+        assert len(walls) == 1
+        assert walls[0]["strike"] == 105.0
+
+    def test_flat_distribution_still_returns_single_largest(self):
+        # No strike clears 10% of a perfectly flat 20-strike distribution - the
+        # feature should never go empty, so the single largest is kept anyway.
+        strikes = list(range(100, 120))
+        call_oi = [10] * 20
+        ctx = make_context(strikes, call_oi, [0] * 20, current_price=110.0)
+
+        walls, reason = self._call_walls(ctx)
+
+        assert reason is None
+        assert len(walls) == 1
+        assert walls[0]["share"] == pytest.approx(0.05, rel=1e-6)
+
+    def test_get_key_price_levels_shape_and_chart_smoke_test(self):
+        strikes = [100, 110, 120, 130, 140, 150]
+        ctx = make_context(strikes, [100] * 6, [100] * 6, current_price=119.0)
+
+        levels = ctx.get_key_price_levels()
+
+        assert set(levels.keys()) == {"Resistance (Call Wall)", "Support (Put Wall)"}
+        assert len(levels["Resistance (Call Wall)"]) == 3
+        assert all({"strike", "share", "distance_pct"} <= w.keys() for w in levels["Resistance (Call Wall)"])
+
+        # Should build without error given multiple walls per side and no price history.
+        chart = build_price_chart(None, levels, ctx.get_strike_range())
+        assert chart is not None
+
+    def test_rule4_narrative_lists_multiple_walls_and_raised_concentration_bar(self):
+        # Distinct strikes per side's "winner" (105 for calls, 70/130 for puts) so
+        # assertions below can't accidentally pass due to overlapping strike values.
+        strikes = [70, 100, 105, 130, 135, 140]
+        call_oi = [10, 10, 5000, 10, 10, 10]
+        put_oi = [27522, 100, 50, 27512, 50, 50]
+        ctx = make_context(strikes, call_oi, put_oi, current_price=134.0)
+        ctx.dte = None  # keep DTE/IV-dependent rules out of scope for this assertion
+
+        breakdown = ta_breakdown.get_technical_breakdown(ctx, risk_free_rate=0.04)
+        walls_row = next(r for r in breakdown if r["Aspect"] == "Institutional 'Walls'")
+
+        assert "70.0" in walls_row["Status"]
+        assert "130.0" in walls_row["Status"]
+        assert "105.0" in walls_row["Status"]
+        # Each wall here holds ~49.8%-99.2% of its side's OI - comfortably above the
+        # raised 30% concentration bar, so the warning should still fire per qualifying
+        # wall, not just on a single forced pick.
+        assert "Concentration risk" in walls_row["Logic"]

@@ -5,7 +5,7 @@ Market Implication) derived from an OptionContext's already-computed chain
 data. Kept separate from optionchain.py because this is almost entirely
 narrative templates/thresholds rather than chain mechanics - optionchain.py
 keeps the underlying data-access and math (calculate_max_pain,
-calculate_implied_move, _wall_strike, _oi_missing_reason, etc.), this module
+calculate_implied_move, _wall_strikes, _oi_missing_reason, etc.), this module
 just turns those numbers into rule-by-rule text.
 
 `ctx` is duck-typed as an OptionContext instance rather than imported, so this
@@ -195,47 +195,39 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
         })
 
     # Rule 4: Key Technical Levels (OI Walls)
-    # Find strikes with max Call OI and max Put OI across original_df (the full,
-    # untrimmed chain) - same reasoning as Rule 1. Falls back to Volume per-side if
-    # that side's OI isn't trustworthy - see _wall_strike / _oi_missing_reason.
-    call_wall, call_fallback_reason = ctx._wall_strike(ctx.original_df, "Open Interest", "Volume", ctx.calls_strike_col_name, "Call")
-    put_wall, put_fallback_reason = ctx._wall_strike(ctx.original_df, "Open Interest.1", "Volume.1", ctx.puts_strike_col_name, "Put")
+    # Find strikes holding a meaningful share of Call/Put OI across original_df (the
+    # full, untrimmed chain) - same reasoning as Rule 1. Up to _MAX_WALLS_PER_SIDE per
+    # side (not just the single max - see _wall_strikes for why). Falls back to
+    # Volume per-side if that side's OI isn't trustworthy - see _oi_missing_reason.
+    call_walls, call_fallback_reason = ctx._wall_strikes(ctx.original_df, "Open Interest", "Volume", ctx.calls_strike_col_name, "Call")
+    put_walls, put_fallback_reason = ctx._wall_strikes(ctx.original_df, "Open Interest.1", "Volume.1", ctx.puts_strike_col_name, "Put")
 
-    # Distance from current price, shown directly (matching Max Pain's existing "(+X%
-    # from current price)" format) rather than left for the reader to eyeball - a row-
-    # count like the trim radius below doesn't translate into "is this far/near" on its
-    # own since strike spacing isn't uniform across the chain.
-    call_wall_pct = (call_wall - ctx.current_price) / ctx.current_price * 100
-    put_wall_pct = (put_wall - ctx.current_price) / ctx.current_price * 100
-    status_text = f"Resistance: {call_wall} ({call_wall_pct:+.1f}%) | Support: {put_wall} ({put_wall_pct:+.1f}%)"
-    logic_text = "Identifying strikes with the highest Open Interest concentration."
+    def _format_walls(walls: list[dict], metric_label: str) -> str:
+        if not walls:
+            return f"N/A (no {metric_label} on this side)"
+        return ", ".join(f"{w['strike']} ({w['distance_pct']:+.1f}%, {w['share']:.0%} {metric_label})" for w in walls)
+
+    call_metric = "Vol" if call_fallback_reason else "OI"
+    put_metric = "Vol" if put_fallback_reason else "OI"
+    status_text = f"Resistance: {_format_walls(call_walls, call_metric)} | Support: {_format_walls(put_walls, put_metric)}"
+    logic_text = "Strikes holding at least a meaningful share of each side's total Open Interest, not just the single largest."
     if call_fallback_reason or put_fallback_reason:
         status_text += " ⚠️ Open Interest unreliable - using Volume instead"
         reasons = " ".join(r for r in (call_fallback_reason, put_fallback_reason) if r)
-        logic_text = f"{reasons} Falling back to highest Volume strikes instead. Treat these levels as low-confidence."
+        logic_text = f"{reasons} Falling back to highest-Volume strikes instead. Treat these levels as low-confidence."
     else:
-        # Concentration sanity check: a wall is an idxmax() pick, so unlike the sum-based
-        # rules above (Overall Balance, Market Urgency - where one outlier strike is just
-        # diluted into the total), a single strike with implausibly large OI relative to
-        # the rest of the chain can single-handedly decide the "wall" outright. Flag it -
-        # this can be a real large institutional position, but is also a known failure
-        # mode for stale/erroneous OI data from yfinance, so it's worth a second look
-        # before treating the level as confirmed.
-        concentration_notes = []
-        if total_calls_oi_full > 0:
-            call_wall_oi = ctx.original_df.loc[ctx.original_df[ctx.calls_strike_col_name] == call_wall, "Open Interest"].iloc[0]
-            call_share = call_wall_oi / total_calls_oi_full
-            if call_share > 0.15:
-                concentration_notes.append(
-                    f"the Call Wall strike ({call_wall}) alone holds {call_share:.1%} of total Call Open Interest"
-                )
-        if total_puts_oi_full > 0:
-            put_wall_oi = ctx.original_df.loc[ctx.original_df[ctx.puts_strike_col_name] == put_wall, "Open Interest.1"].iloc[0]
-            put_share = put_wall_oi / total_puts_oi_full
-            if put_share > 0.15:
-                concentration_notes.append(
-                    f"the Put Wall strike ({put_wall}) alone holds {put_share:.1%} of total Put Open Interest"
-                )
+        # Concentration sanity check: even among walls that qualified on their own
+        # merit, one strike holding an extreme share of the entire side's OI can still
+        # reflect stale/erroneous data rather than real positioning (vs. a real large
+        # institutional position). Set well above the wall-selection bar itself so
+        # this only fires on genuine outliers, not on every qualifying wall.
+        concentration_notes = [
+            f"the Call Wall at {w['strike']} alone holds {w['share']:.1%} of total Call Open Interest"
+            for w in call_walls if w["share"] > 0.30
+        ] + [
+            f"the Put Wall at {w['strike']} alone holds {w['share']:.1%} of total Put Open Interest"
+            for w in put_walls if w["share"] > 0.30
+        ]
         if concentration_notes:
             logic_text += (
                 f" ⚠️ Concentration risk: {' and '.join(concentration_notes)} across the entire chain - "
@@ -252,12 +244,11 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
     displayed_low, displayed_high = ctx.get_strike_range()
     out_of_range = []
     needed_radii = []
-    if call_wall < displayed_low or call_wall > displayed_high:
-        out_of_range.append(f"Call Wall ({call_wall})")
-        needed_radii.append(_trim_radius_needed_for_strike(ctx, call_wall))
-    if put_wall < displayed_low or put_wall > displayed_high:
-        out_of_range.append(f"Put Wall ({put_wall})")
-        needed_radii.append(_trim_radius_needed_for_strike(ctx, put_wall))
+    for side_label, walls in (("Call Wall", call_walls), ("Put Wall", put_walls)):
+        for w in walls:
+            if w["strike"] < displayed_low or w["strike"] > displayed_high:
+                out_of_range.append(f"{side_label} ({w['strike']})")
+                needed_radii.append(_trim_radius_needed_for_strike(ctx, w["strike"]))
     if out_of_range:
         them_it = "them" if len(out_of_range) > 1 else "it"
         logic_text += (
@@ -266,14 +257,20 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
             f"{max(needed_radii)} or higher to see {them_it} in the table/chart."
         )
 
+    def _primary_wall_narrative(walls: list[dict], role: str) -> str:
+        if not walls:
+            return ""
+        extra = f" (plus {len(walls) - 1} more level{'s' if len(walls) > 2 else ''} nearby)" if len(walls) > 1 else ""
+        return f"The {role} Wall at {walls[0]['strike']}{extra} acts as a {'ceiling' if role == 'Call' else 'floor'} where {'MMs are net sellers, creating heavy resistance' if role == 'Call' else 'institutions have bought protection'}. "
+
     breakdown.append({
         "Aspect": "Institutional 'Walls'",
         "Status": status_text,
         "Logic": logic_text,
         "Market Implication (MMs/Institutions vs Retail)": (
-            f"The Call Wall at {call_wall} acts as a ceiling where MMs are net sellers, creating heavy resistance. "
-            f"The Put Wall at {put_wall} acts as a floor where institutions have bought protection. "
-            "Price often 'pins' or bounces between these two levels as expiration approaches."
+            _primary_wall_narrative(call_walls, "Call")
+            + _primary_wall_narrative(put_walls, "Put")
+            + "Price often 'pins' or bounces between these levels as expiration approaches."
         )
     })
 
@@ -306,12 +303,17 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
         })
 
     # Rule 6: Probability vs Key Levels - risk-neutral odds (Black-Scholes N(d2),
-    # flat ATM IV) of price actually breaking the Call/Put Walls and Max Pain by
-    # expiration, rather than just naming the levels as in Rules 4-5. Guarded the
-    # same way as Implied Move: 'no DTE or IV columns missing entirely' (skip
-    # silently) is distinct from 'ATM IV present but unreliable' (show N/A).
-    p_above_call_wall = ctx._probability_above_strike(call_wall)
-    p_above_put_wall = ctx._probability_above_strike(put_wall)
+    # flat ATM IV) of price actually breaking the *primary* (rank-1, most prominent)
+    # Call/Put Wall and Max Pain by expiration, rather than just naming the levels as
+    # in Rules 4-5. Only the top wall per side, not every qualifying one - a
+    # probability per secondary wall would be a lot of extra noise for marginal
+    # value. Guarded the same way as Implied Move: 'no DTE or IV columns missing
+    # entirely' (skip silently) is distinct from 'ATM IV present but unreliable'
+    # (show N/A).
+    call_wall = call_walls[0]["strike"] if call_walls else None
+    put_wall = put_walls[0]["strike"] if put_walls else None
+    p_above_call_wall = ctx._probability_above_strike(call_wall) if call_wall is not None else None
+    p_above_put_wall = ctx._probability_above_strike(put_wall) if put_wall is not None else None
 
     if p_above_call_wall is not None and p_above_put_wall is not None:
         p_below_put_wall = 1 - p_above_put_wall

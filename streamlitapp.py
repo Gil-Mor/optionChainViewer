@@ -32,25 +32,28 @@ GLOSSARY_MARKDOWN = """
 - **Walls** — strikes with unusually large OI. They can act like price magnets or barriers, since MMs hedging that much exposure tend to defend or gravitate toward that level.
 """
 
-st.title("Option Chain Viewer")
-st.caption("An option chain viewer with some visual aids to make Calls/Puts positioning easier to read.")
-
-# Pinned to the viewport's top-right corner (below Streamlit's own header bar) instead of
-# flowing inline, so it stays put in the corner instead of dropping below the title and
-# going full-width on narrow/mobile layouts.
+# Positioned (not fixed) to the header container's top-right corner instead of flowing
+# inline, so it sits next to the title without st.columns stacking it full-width below the
+# title on narrow/mobile layouts - but it still scrolls away with the rest of the page.
 st.markdown(
     """<style>
+    .st-key-header_container {
+        position: relative;
+    }
     .st-key-help_popover {
-        position: fixed;
-        top: 4.5rem;
-        right: 1rem;
+        position: absolute;
+        top: 0;
+        right: 0;
         z-index: 999;
     }
     </style>""",
     unsafe_allow_html=True,
 )
-with st.popover("❓", key="help_popover"):
-    st.markdown(GLOSSARY_MARKDOWN)
+with st.container(key="header_container"):
+    st.title("Option Chain Viewer")
+    st.caption("An option chain viewer with some visual aids to make Calls/Puts positioning easier to read.")
+    with st.popover("❓", key="help_popover"):
+        st.markdown(GLOSSARY_MARKDOWN)
 
 def is_market_open():
     """Checks if US Markets (NYSE/NASDAQ) are open (9:30 AM - 4:00 PM ET)."""

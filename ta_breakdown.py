@@ -16,6 +16,17 @@ module instead, and a two-way import would be circular.
 import yfinanceGetOptions as yfi
 
 
+def _trim_radius_needed_for_strike(ctx, strike: float) -> int:
+    """The 'Trim table around strike' radius (row-count from the ATM strike, not a
+    $ distance - see trim_rows_symmetric_radius in optionchain.py) a user would need
+    to set for `strike` to actually appear in the displayed table/chart.
+    """
+    original_reset = ctx.original_df.reset_index(drop=True)
+    atm_pos = original_reset.index[original_reset["Strike"] == ctx.atm_strike][0]
+    strike_pos = original_reset.index[original_reset["Strike"] == strike][0]
+    return abs(int(strike_pos) - int(atm_pos))
+
+
 def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
     """Generates a technical breakdown based on positioning rules."""
     breakdown = []
@@ -198,18 +209,25 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
         logic_text = f"{reasons} Falling back to highest Volume strikes instead. Treat these levels as low-confidence."
 
     # A wall computed from the full chain can land on a strike the user has trimmed
-    # out of the displayed table/chart - flag that explicitly rather than leaving
-    # someone unable to find "Resistance: 800.0" anywhere in what they're looking at.
+    # out of the displayed table/chart - flag that explicitly, with the exact radius
+    # needed to bring it into view, rather than leaving someone unable to find
+    # "Resistance: 800.0" anywhere in what they're looking at and not knowing how far
+    # to widen the trim to fix it.
     displayed_low, displayed_high = ctx.get_strike_range()
     out_of_range = []
+    needed_radii = []
     if call_wall < displayed_low or call_wall > displayed_high:
         out_of_range.append(f"Call Wall ({call_wall})")
+        needed_radii.append(_trim_radius_needed_for_strike(ctx, call_wall))
     if put_wall < displayed_low or put_wall > displayed_high:
         out_of_range.append(f"Put Wall ({put_wall})")
+        needed_radii.append(_trim_radius_needed_for_strike(ctx, put_wall))
     if out_of_range:
+        them_it = "them" if len(out_of_range) > 1 else "it"
         logic_text += (
             f" ⚠️ {' and '.join(out_of_range)} outside your displayed range "
-            f"({displayed_low:.2f}-{displayed_high:.2f}) - widen the trim to see it in the table/chart."
+            f"({displayed_low:.2f}-{displayed_high:.2f}) - set 'Trim table around strike' to "
+            f"{max(needed_radii)} or higher to see {them_it} in the table/chart."
         )
 
     breakdown.append({
@@ -522,11 +540,12 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
     # else: Bid/Ask columns absent entirely (e.g. CSV-loaded chain) - feature not
     # applicable, skip silently
 
-    # (A) Light synthesis: a final pass over the numeric ratios Rules 1, 2, and 7
-    # already computed above (not their rendered status strings, which are free to
-    # reword later) to call out agreement or tension between rules that measure
-    # different things (OI positioning vs. OTM positioning vs. option pricing) and
-    # can legitimately point different directions without actually disagreeing.
+    # (A) Light synthesis: a final pass over the numeric ratios the Overall Balance,
+    # OTM Skew, and IV Skew rows already computed above (not their rendered status
+    # strings, which are free to reword later) to call out agreement or tension
+    # between rules that measure different things (OI positioning vs. OTM positioning
+    # vs. option pricing) and can legitimately point different directions without
+    # actually disagreeing.
     pc_direction = None
     if pc_ratio is not None:
         pc_direction = "bullish" if pc_ratio < 0.8 else "bearish" if pc_ratio > 1.2 else "neutral"
@@ -568,7 +587,7 @@ def get_technical_breakdown(ctx, risk_free_rate: float) -> list[dict]:
         breakdown.append({
             "Aspect": "Cross-Rule Synthesis",
             "Status": f"{len(synthesis_notes)} cross-check note(s)",
-            "Logic": "Compares the numeric ratios already computed by Rules 1, 2, and 7 above for directional agreement/tension.",
+            "Logic": "Compares the numeric ratios already computed by the Overall Balance, OTM Skew, and IV Skew rows above for directional agreement/tension.",
             "Market Implication (MMs/Institutions vs Retail)": " ".join(synthesis_notes)
         })
 
